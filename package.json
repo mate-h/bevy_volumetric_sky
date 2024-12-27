@@ -1,0 +1,18 @@
+{
+  "name": "bevy-volumetric-sky",
+  "version": "1.0.0",
+  "description": "Bevy Volumetric Sky Plugin",
+  "license": "MIT",
+  "author": "Máté Homolya <mate.homolya@proton.me",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "pnpm run build:wasm && tsc && vite build",
+    "build:wasm": "cargo build --profile release --features bevy/webgpu --target wasm32-unknown-unknown && wasm-bindgen --out-dir wasm --out-name main --target web target/wasm32-unknown-unknown/release/bevy_volumetric_sky.wasm",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3"
+  }
+}

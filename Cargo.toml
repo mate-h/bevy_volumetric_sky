@@ -1,0 +1,12 @@
+[package]
+name = "bevy_volumetric_sky"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = "0.15.0"
+bevy_panorbit_camera = "0.21.2"
+lazy_static = "1.5.0"
+wasm-bindgen = "0.2.99"
+bevy_egui = "0.31.1"
+bevy_debug_grid = { git = "https://github.com/mate-h/bevy_debug_grid" }
