@@ -1,16 +1,15 @@
 use std::borrow::Cow;
 
 use bevy::{
+    asset::load_internal_asset,
     log,
     prelude::*,
     render::{
-        extract_component::{
-            ComponentUniforms, ExtractComponent, ExtractComponentPlugin, UniformComponentPlugin,
-        },
-        extract_resource::{ExtractResource, ExtractResourcePlugin},
+        extract_component::{ComponentUniforms, ExtractComponentPlugin, UniformComponentPlugin},
+        extract_resource::ExtractResourcePlugin,
         globals::{GlobalsBuffer, GlobalsUniform},
         render_asset::{RenderAssetUsages, RenderAssets},
-        render_graph::{self, RenderGraph, RenderLabel},
+        render_graph::{Node, NodeRunError, RenderGraph, RenderGraphContext, RenderLabel},
         render_resource::*,
         renderer::{RenderContext, RenderDevice},
         texture::GpuImage,
@@ -18,43 +17,14 @@ use bevy::{
     },
 };
 
-use binding_types::{texture_storage_2d, uniform_buffer};
+use binding_types::*;
+
+use crate::atmosphere::{AtmosphereResources, AtmosphereSettings};
 
 const SHADER_ASSET_PATH: &str = "shaders/compute_shader.wgsl";
-const SIZE: (u32, u32) = (256, 256);
+const SIZE: (u32, u32) = (256, 64);
 const WORKGROUP_SIZE: u32 = 8;
-
-#[derive(Component, Default, Clone, Copy, ExtractComponent, ShaderType)]
-pub struct ComputeShaderSettings {
-    pub value: f32,
-}
-
-fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
-    let initial_data = vec![0u8; (SIZE.0 * SIZE.1 * 16) as usize];
-    let mut image = Image::new_fill(
-        Extent3d {
-            width: SIZE.0,
-            height: SIZE.1,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        &initial_data,
-        TextureFormat::Rgba32Float,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    image.texture_descriptor.usage =
-        TextureUsages::COPY_DST | TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING;
-    let image_handle = images.add(image);
-    commands.insert_resource(ComputedTexture {
-        texture: image_handle,
-    });
-    commands.spawn(ComputeShaderSettings { value: 1.0 });
-}
-
-#[derive(Resource, Clone, ExtractResource)]
-pub struct ComputedTexture {
-    pub texture: Handle<Image>,
-}
+pub const ATMOSPHERE_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(13871298374012);
 
 pub struct ComputeShaderPlugin;
 
@@ -63,33 +33,120 @@ struct ComputeShaderLabel;
 
 impl Plugin for ComputeShaderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PreStartup, setup).add_plugins((
-            ExtractResourcePlugin::<ComputedTexture>::default(),
-            ExtractComponentPlugin::<ComputeShaderSettings>::default(),
-            UniformComponentPlugin::<ComputeShaderSettings>::default(),
-        ));
+        load_internal_asset!(
+            app,
+            ATMOSPHERE_SHADER_HANDLE,
+            "../assets/shaders/atmosphere.wgsl",
+            Shader::from_wgsl
+        );
+
+        app.add_systems(PreStartup, setup_compute_shader)
+            .add_plugins((
+                ExtractResourcePlugin::<AtmosphereResources>::default(),
+                ExtractComponentPlugin::<AtmosphereSettings>::default(),
+                UniformComponentPlugin::<AtmosphereSettings>::default(),
+            ));
 
         let render_app = app.sub_app_mut(RenderApp);
 
-        // Add node to render graph
+        // Add nodes to render graph
         let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
-        render_graph.add_node(ComputeShaderLabel, ComputeNode::default());
+        render_graph.add_node(ComputeShaderLabel, TransmittanceNode::default());
+        // render_graph.add_node(
+        //     ComputeShaderLabel::MultipleScattering,
+        //     MultipleScatteringNode::default(),
+        // );
+
+        // Add dependencies
+        // render_graph.add_node_edge(
+        //     ComputeShaderLabel::Transmittance,
+        //     ComputeShaderLabel::MultipleScattering,
+        // );
         render_graph.add_node_edge(ComputeShaderLabel, bevy::render::graph::CameraDriverLabel);
     }
 
     fn finish(&self, app: &mut App) {
         let render_app = app.sub_app_mut(RenderApp);
-        render_app.init_resource::<ComputeShaderPipeline>();
+        render_app.init_resource::<TransmittancePipeline>();
+        // render_app.init_resource::<MultipleScatteringPipeline>();
     }
 }
 
-#[derive(Resource)]
-struct ComputeShaderPipeline {
-    bind_group_layout: BindGroupLayout,
-    pipeline: CachedComputePipelineId,
+fn setup_compute_shader(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    // Create transmittance texture
+    let mut image = Image::new(
+        Extent3d {
+            width: 256,
+            height: 64,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        bytemuck::cast_slice(&vec![0f32; 256 * 64 * 4]).to_vec(),
+        TextureFormat::Rgba32Float,
+        RenderAssetUsages::all(),
+    );
+
+    image.texture_descriptor.usage =
+        TextureUsages::COPY_DST | TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING;
+
+    let transmittance_texture = images.add(image);
+
+    // Create multiple scattering texture
+    let multiple_scattering_texture = images.add(Image::new(
+        Extent3d {
+            width: 32,
+            height: 32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        bytemuck::cast_slice(&vec![0f32; 32 * 32 * 4]).to_vec(),
+        TextureFormat::Rgba32Float,
+        RenderAssetUsages::all(),
+    ));
+
+    let cloud_texture = images.add(Image::new(
+        Extent3d {
+            width: 32,
+            height: 32,
+            depth_or_array_layers: 32,
+        },
+        TextureDimension::D3,
+        bytemuck::cast_slice(&vec![0f32; 32 * 32 * 32 * 4]).to_vec(),
+        TextureFormat::Rgba32Float,
+        RenderAssetUsages::all(),
+    ));
+
+    let placeholder = images.add(Image::new(
+        Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        bytemuck::cast_slice(&vec![0f32; 1 * 1 * 4]).to_vec(),
+        TextureFormat::Rgba32Float,
+        RenderAssetUsages::all(),
+    ));
+
+    commands.insert_resource(AtmosphereResources {
+        transmittance_texture,
+        multiple_scattering_texture,
+        cloud_texture,
+        placeholder,
+    });
+
+    commands.spawn(AtmosphereSettings::default());
 }
 
-impl FromWorld for ComputeShaderPipeline {
+// Create separate pipeline resources for each pass
+#[derive(Resource)]
+struct TransmittancePipeline {
+    bind_group_layout: BindGroupLayout,
+    pipeline: CachedComputePipelineId,
+    sampler: Sampler,
+}
+
+impl FromWorld for TransmittancePipeline {
     fn from_world(world: &mut World) -> Self {
         let render_device = world.resource::<RenderDevice>();
 
@@ -100,7 +157,14 @@ impl FromWorld for ComputeShaderPipeline {
                 (
                     uniform_buffer::<GlobalsUniform>(false),
                     texture_storage_2d(TextureFormat::Rgba32Float, StorageTextureAccess::WriteOnly),
-                    uniform_buffer::<ComputeShaderSettings>(true),
+                    uniform_buffer::<AtmosphereSettings>(true),
+                    // Add dummy bindings for later stages
+                    texture_2d(TextureSampleType::Float { filterable: true }),
+                    sampler(SamplerBindingType::Filtering),
+                    texture_2d(TextureSampleType::Float { filterable: true }),
+                    sampler(SamplerBindingType::Filtering),
+                    texture_3d(TextureSampleType::Float { filterable: true }),
+                    sampler(SamplerBindingType::Filtering),
                 ),
             ),
         );
@@ -118,23 +182,32 @@ impl FromWorld for ComputeShaderPipeline {
             zero_initialize_workgroup_memory: false,
         });
 
-        ComputeShaderPipeline {
+        let sampler = render_device.create_sampler(&SamplerDescriptor::default());
+
+        TransmittancePipeline {
             bind_group_layout,
             pipeline,
+            sampler,
         }
     }
 }
+
+// #[derive(Resource)]
+// struct MultipleScatteringPipeline {
+//     bind_group_layout: BindGroupLayout,
+//     pipeline: CachedComputePipelineId,
+// }
 
 enum ComputeState {
     Loading,
     Ready,
 }
 
-struct ComputeNode {
+struct TransmittanceNode {
     state: ComputeState,
 }
 
-impl Default for ComputeNode {
+impl Default for TransmittanceNode {
     fn default() -> Self {
         Self {
             state: ComputeState::Loading,
@@ -142,9 +215,9 @@ impl Default for ComputeNode {
     }
 }
 
-impl render_graph::Node for ComputeNode {
+impl Node for TransmittanceNode {
     fn update(&mut self, world: &mut World) {
-        let pipeline = world.resource::<ComputeShaderPipeline>();
+        let pipeline = world.resource::<TransmittancePipeline>();
         let pipeline_cache = world.resource::<PipelineCache>();
 
         match self.state {
@@ -161,25 +234,44 @@ impl render_graph::Node for ComputeNode {
 
     fn run(
         &self,
-        _graph: &mut render_graph::RenderGraphContext,
+        _graph: &mut RenderGraphContext,
         render_context: &mut RenderContext,
         world: &World,
-    ) -> Result<(), render_graph::NodeRunError> {
+    ) -> Result<(), NodeRunError> {
         if let ComputeState::Ready = self.state {
-            let pipeline = world.resource::<ComputeShaderPipeline>();
+            let pipeline = world.resource::<TransmittancePipeline>();
             let pipeline_cache = world.resource::<PipelineCache>();
 
             // Bind group setup
             let gpu_images = world.resource::<RenderAssets<GpuImage>>();
-            let computed_texture = world.resource::<ComputedTexture>();
+            let atmosphere = world.resource::<AtmosphereResources>();
             let globals_buffer = world.resource::<GlobalsBuffer>();
-            let settings_uniforms = world.resource::<ComponentUniforms<ComputeShaderSettings>>();
+            let settings_uniforms = world.resource::<ComponentUniforms<AtmosphereSettings>>();
             let Some(settings_binding) = settings_uniforms.binding() else {
+                log::error!("Settings binding not found");
                 return Ok(());
             };
 
-            let Some(view) = gpu_images.get(&computed_texture.texture) else {
-                log::error!("Computed texture not found");
+            let Some(transmittance_texture) = gpu_images.get(&atmosphere.transmittance_texture)
+            else {
+                log::error!("Transmittance texture not found");
+                return Ok(());
+            };
+
+            let Some(multiple_scattering_texture) =
+                gpu_images.get(&atmosphere.multiple_scattering_texture)
+            else {
+                log::error!("Multiple scattering texture not found");
+                return Ok(());
+            };
+
+            let Some(cloud_texture) = gpu_images.get(&atmosphere.cloud_texture) else {
+                log::error!("Cloud texture not found");
+                return Ok(());
+            };
+
+            let Some(placeholder_texture) = gpu_images.get(&atmosphere.placeholder) else {
+                log::error!("Placeholder texture not found");
                 return Ok(());
             };
 
@@ -188,8 +280,14 @@ impl render_graph::Node for ComputeNode {
                 &pipeline.bind_group_layout,
                 &BindGroupEntries::sequential((
                     &globals_buffer.buffer,
-                    &view.texture_view,
+                    &transmittance_texture.texture_view,
                     settings_binding.clone(),
+                    &placeholder_texture.texture_view,
+                    &pipeline.sampler,
+                    &multiple_scattering_texture.texture_view,
+                    &pipeline.sampler,
+                    &cloud_texture.texture_view,
+                    &pipeline.sampler,
                 )),
             );
 
@@ -203,7 +301,13 @@ impl render_graph::Node for ComputeNode {
 
             pass.set_pipeline(compute_pipeline);
             pass.set_bind_group(0, &bind_group, &[0]);
-            pass.dispatch_workgroups(SIZE.0 / WORKGROUP_SIZE, SIZE.1 / WORKGROUP_SIZE, 1);
+
+            // Add validation for workgroup calculations
+            let workgroup_x = SIZE.0 / WORKGROUP_SIZE;
+            let workgroup_y = SIZE.1 / WORKGROUP_SIZE;
+            pass.dispatch_workgroups(workgroup_x, workgroup_y, 1);
+        } else {
+            // log::warn!("TransmittanceNode::run - Not in ready state");
         }
         Ok(())
     }

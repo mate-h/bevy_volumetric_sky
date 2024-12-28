@@ -15,7 +15,7 @@ use bevy::{
         },
         render_resource::{binding_types::*, *},
         renderer::{RenderContext, RenderDevice},
-        view::{ViewDepthTexture, ViewTarget},
+        view::{ViewDepthTexture, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms},
         RenderApp,
     },
 };
@@ -71,19 +71,21 @@ impl ViewNode for PostProcessNode {
         &'static ViewDepthTexture,
         &'static PostProcessSettings,
         &'static DynamicUniformIndex<PostProcessSettings>,
+        &'static ViewUniformOffset,
     );
 
     fn run(
         &self,
         _graph: &mut RenderGraphContext,
         render_context: &mut RenderContext,
-        (view_target, depth_texture, _post_process_settings, settings_index): QueryItem<
+        (view_target, depth_texture, _post_process_settings, settings_index, view_uniform_offset): QueryItem<
             Self::ViewQuery,
         >,
         world: &World,
     ) -> Result<(), NodeRunError> {
         let post_process_pipeline = world.resource::<PostProcessPipeline>();
         let pipeline_cache = world.resource::<PipelineCache>();
+        let view_uniforms = world.resource::<ViewUniforms>();
 
         let Some(pipeline) = pipeline_cache.get_render_pipeline(post_process_pipeline.pipeline_id)
         else {
@@ -92,6 +94,11 @@ impl ViewNode for PostProcessNode {
 
         let settings_uniforms = world.resource::<ComponentUniforms<PostProcessSettings>>();
         let Some(settings_binding) = settings_uniforms.uniforms().binding() else {
+            return Ok(());
+        };
+
+        // Get the view uniform binding
+        let Some(view_binding) = view_uniforms.uniforms.binding() else {
             return Ok(());
         };
 
@@ -104,6 +111,7 @@ impl ViewNode for PostProcessNode {
                 post_process.source,
                 depth_texture.view(),
                 &post_process_pipeline.sampler,
+                view_binding.clone(),
                 settings_binding.clone(),
             )),
         );
@@ -121,7 +129,11 @@ impl ViewNode for PostProcessNode {
         });
 
         render_pass.set_render_pipeline(pipeline);
-        render_pass.set_bind_group(0, &bind_group, &[settings_index.index()]);
+        render_pass.set_bind_group(
+            0,
+            &bind_group,
+            &[view_uniform_offset.offset, settings_index.index()],
+        );
         render_pass.draw(0..3, 0..1);
 
         Ok(())
@@ -150,6 +162,8 @@ impl FromWorld for PostProcessPipeline {
                     texture_2d_multisampled(TextureSampleType::Depth),
                     // The sampler
                     sampler(SamplerBindingType::Filtering),
+                    // View uniform
+                    uniform_buffer::<ViewUniform>(true),
                     // The settings uniform
                     uniform_buffer::<PostProcessSettings>(true),
                 ),

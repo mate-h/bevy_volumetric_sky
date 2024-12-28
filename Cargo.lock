@@ -533,7 +533,7 @@ dependencies = [
 [[package]]
 name = "bevy_debug_grid"
 version = "0.7.0"
-source = "git+https://github.com/mate-h/bevy_debug_grid#e57c2d44680ad29a2337b1da11266159d665d4b1"
+source = "git+https://github.com/mate-h/bevy_debug_grid#7dd08363c81ce833fb21ccd87a29d896e73fbe44"
 dependencies = [
  "bevy",
 ]
@@ -1276,6 +1276,7 @@ dependencies = [
  "bevy_debug_grid",
  "bevy_egui",
  "bevy_panorbit_camera",
+ "bytemuck",
  "lazy_static",
  "wasm-bindgen",
 ]

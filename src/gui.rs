@@ -1,11 +1,13 @@
-use crate::compute::ComputeShaderSettings;
+use crate::atmosphere::{AtmosphereResources, AtmosphereSettings};
 use crate::post_process::PostProcessSettings;
+use bevy::color::palettes::tailwind;
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     input::mouse::MouseMotion,
     prelude::*,
 };
 use bevy_debug_grid::Grid;
+use bevy_egui::egui::Color32;
 use bevy_egui::{egui, EguiContexts, EguiSet};
 use bevy_panorbit_camera::PanOrbitCamera;
 
@@ -57,15 +59,22 @@ fn ui_system(
     mut contexts: EguiContexts,
     diagnostics: Res<DiagnosticsStore>,
     mut camera_query: Query<&mut PanOrbitCamera>,
-    mut shader_settings: Query<&mut ComputeShaderSettings>,
     mut post_process_settings: Query<&mut PostProcessSettings>,
     mut grid_query: Query<&mut Visibility, With<Grid>>,
+    atmosphere_settings: Query<&AtmosphereSettings>,
+    atmosphere_res: Res<AtmosphereResources>,
 ) {
+    // let atmosphere = atmosphere.get_single().unwrap();
+    // log::info!("Atmosphere: {:?}", atmosphere.atmosphere_height);
+    // let texture_id = contexts.add_image(computed_texture.texture.clone_weak());
+    let ms_texture_id = contexts.add_image(atmosphere_res.multiple_scattering_texture.clone_weak());
+    let transmittance_texture_id =
+        contexts.add_image(atmosphere_res.transmittance_texture.clone_weak());
     let ctx = contexts.ctx_mut();
 
     egui::Window::new("")
         .title_bar(false)
-        .default_width(200.0)
+        .default_width(256.0)
         .show(ctx, |ui| {
             if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
                 if let Some(fps_value) = fps.smoothed() {
@@ -106,7 +115,7 @@ fn ui_system(
 
             ui.separator();
             if let Ok(mut grid_visibility) = grid_query.get_single_mut() {
-                let mut show_grid = *grid_visibility == Visibility::Visible;
+                let mut show_grid = *grid_visibility != Visibility::Hidden;
                 if ui.checkbox(&mut show_grid, "Show Grid").clicked() {
                     *grid_visibility = if show_grid {
                         Visibility::Visible
@@ -116,14 +125,29 @@ fn ui_system(
                 }
             }
 
+            ui.separator();
+            let blue_400 = Color32::from_hex(tailwind::BLUE_400.to_hex().as_str()).unwrap();
+            ui.colored_label(blue_400, "Atmosphere");
+
+            // ui.image(egui::load::SizedTexture::new(
+            //     texture_id,
+            //     egui::vec2(256.0, 256.0),
+            // ));
+
+            ui.image(egui::load::SizedTexture::new(
+                transmittance_texture_id,
+                egui::vec2(256.0, 64.0),
+            ));
+
+            ui.image(egui::load::SizedTexture::new(
+                ms_texture_id,
+                egui::vec2(32.0, 32.0),
+            ));
+
             // Luts
-            ui.add(
-                egui::Slider::new(
-                    &mut shader_settings.get_single_mut().unwrap().value,
-                    0.0..=1.0,
-                )
-                .text("Value"),
-            );
+            // if let Ok(mut settings) = atmo.get_single_mut() {
+            //     ui.add(egui::Slider::new(&mut settings.value, 0.0..=1.0).text("Value"));
+            // }
 
             // Post process
             if let Ok(mut settings) = post_process_settings.get_single_mut() {
