@@ -134,8 +134,6 @@ fn setup_compute_shader(mut commands: Commands, mut images: ResMut<Assets<Image>
         cloud_texture,
         placeholder,
     });
-
-    commands.spawn(AtmosphereSettings::default());
 }
 
 // Create separate pipeline resources for each pass
@@ -155,16 +153,17 @@ impl FromWorld for TransmittancePipeline {
             &BindGroupLayoutEntries::sequential(
                 ShaderStages::COMPUTE,
                 (
-                    uniform_buffer::<GlobalsUniform>(false),
-                    texture_storage_2d(TextureFormat::Rgba32Float, StorageTextureAccess::WriteOnly),
+                    // atmosphere bindings
                     uniform_buffer::<AtmosphereSettings>(true),
-                    // Add dummy bindings for later stages
                     texture_2d(TextureSampleType::Float { filterable: true }),
                     sampler(SamplerBindingType::Filtering),
                     texture_2d(TextureSampleType::Float { filterable: true }),
                     sampler(SamplerBindingType::Filtering),
                     texture_3d(TextureSampleType::Float { filterable: true }),
                     sampler(SamplerBindingType::Filtering),
+                    // output texture and globals
+                    uniform_buffer::<GlobalsUniform>(false),
+                    texture_storage_2d(TextureFormat::Rgba32Float, StorageTextureAccess::WriteOnly),
                 ),
             ),
         );
@@ -279,8 +278,7 @@ impl Node for TransmittanceNode {
                 "compute_shader_bind_group",
                 &pipeline.bind_group_layout,
                 &BindGroupEntries::sequential((
-                    &globals_buffer.buffer,
-                    &transmittance_texture.texture_view,
+                    // atmosphere bindings
                     settings_binding.clone(),
                     &placeholder_texture.texture_view,
                     &pipeline.sampler,
@@ -288,6 +286,9 @@ impl Node for TransmittanceNode {
                     &pipeline.sampler,
                     &cloud_texture.texture_view,
                     &pipeline.sampler,
+                    // output texture and globals
+                    &globals_buffer.buffer,
+                    &transmittance_texture.texture_view,
                 )),
             );
 

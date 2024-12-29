@@ -29,7 +29,8 @@ pub struct AtmosphereSettings {
 impl Default for AtmosphereSettings {
     fn default() -> Self {
         Self {
-            sun_position: Vec3::new(0.0, 1.0, 0.0),
+            // sunset towards the horizon
+            sun_position: Vec3::new(0.0, 0.0, -1.0),
             eye_position: Vec3::new(0.0, 1000.0, 0.0),
             sun_intensity: 22.0,
             rayleigh_scattering: Vec3::new(5.802, 13.558, 33.1),
@@ -37,7 +38,7 @@ impl Default for AtmosphereSettings {
             mie_g: 0.8,
             atmosphere_height: 100000.0,
             cloud_coverage: 0.5,
-            enable_clouds: 1.0,
+            enable_clouds: 0.0,
             exposure: 1.0,
             multiple_scattering_factor: 1.0,
         }

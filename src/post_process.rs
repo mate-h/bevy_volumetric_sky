@@ -4,21 +4,26 @@ use bevy::{
         fullscreen_vertex_shader::fullscreen_shader_vertex_state,
     },
     ecs::query::QueryItem,
+    log,
     prelude::*,
     render::{
         extract_component::{
             ComponentUniforms, DynamicUniformIndex, ExtractComponent, ExtractComponentPlugin,
             UniformComponentPlugin,
         },
+        render_asset::RenderAssets,
         render_graph::{
             NodeRunError, RenderGraphApp, RenderGraphContext, RenderLabel, ViewNode, ViewNodeRunner,
         },
         render_resource::{binding_types::*, *},
         renderer::{RenderContext, RenderDevice},
+        texture::GpuImage,
         view::{ViewDepthTexture, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms},
         RenderApp,
     },
 };
+
+use crate::{AtmosphereResources, AtmosphereSettings};
 
 #[derive(Component, Default, Clone, Copy, ExtractComponent, ShaderType)]
 pub struct PostProcessSettings {
@@ -72,33 +77,68 @@ impl ViewNode for PostProcessNode {
         &'static PostProcessSettings,
         &'static DynamicUniformIndex<PostProcessSettings>,
         &'static ViewUniformOffset,
+        &'static DynamicUniformIndex<AtmosphereSettings>,
     );
 
     fn run(
         &self,
         _graph: &mut RenderGraphContext,
         render_context: &mut RenderContext,
-        (view_target, depth_texture, _post_process_settings, settings_index, view_uniform_offset): QueryItem<
-            Self::ViewQuery,
-        >,
+        (
+            view_target,
+            depth_texture,
+            _post_process_settings,
+            settings_index,
+            view_uniform_offset,
+            atmosphere_settings_index,
+        ): QueryItem<Self::ViewQuery>,
         world: &World,
     ) -> Result<(), NodeRunError> {
+        let atmosphere = world.resource::<AtmosphereResources>();
         let post_process_pipeline = world.resource::<PostProcessPipeline>();
         let pipeline_cache = world.resource::<PipelineCache>();
         let view_uniforms = world.resource::<ViewUniforms>();
+        let gpu_images = world.resource::<RenderAssets<GpuImage>>();
+        let atmosphere_settings_uniforms =
+            world.resource::<ComponentUniforms<AtmosphereSettings>>();
+
+        let Some(atmosphere_settings_binding) = atmosphere_settings_uniforms.binding() else {
+            log::error!("Atmosphere settings binding not found");
+            return Ok(());
+        };
+
+        let Some(transmittance_texture) = gpu_images.get(&atmosphere.transmittance_texture) else {
+            log::error!("Transmittance texture not found");
+            return Ok(());
+        };
+
+        let Some(multiple_scattering_texture) =
+            gpu_images.get(&atmosphere.multiple_scattering_texture)
+        else {
+            log::error!("Multiple scattering texture not found");
+            return Ok(());
+        };
+
+        let Some(cloud_texture) = gpu_images.get(&atmosphere.cloud_texture) else {
+            log::error!("Cloud texture not found");
+            return Ok(());
+        };
 
         let Some(pipeline) = pipeline_cache.get_render_pipeline(post_process_pipeline.pipeline_id)
         else {
+            log::error!("Post process pipeline not found");
             return Ok(());
         };
 
         let settings_uniforms = world.resource::<ComponentUniforms<PostProcessSettings>>();
         let Some(settings_binding) = settings_uniforms.uniforms().binding() else {
+            log::error!("Settings binding not found");
             return Ok(());
         };
 
         // Get the view uniform binding
         let Some(view_binding) = view_uniforms.uniforms.binding() else {
+            log::error!("View binding not found");
             return Ok(());
         };
 
@@ -108,6 +148,15 @@ impl ViewNode for PostProcessNode {
             "post_process_bind_group",
             &post_process_pipeline.layout,
             &BindGroupEntries::sequential((
+                // atmosphere bindings
+                atmosphere_settings_binding.clone(),
+                &transmittance_texture.texture_view,
+                &post_process_pipeline.sampler,
+                &multiple_scattering_texture.texture_view,
+                &post_process_pipeline.sampler,
+                &cloud_texture.texture_view,
+                &post_process_pipeline.sampler,
+                // output texture and globals
                 post_process.source,
                 depth_texture.view(),
                 &post_process_pipeline.sampler,
@@ -132,7 +181,11 @@ impl ViewNode for PostProcessNode {
         render_pass.set_bind_group(
             0,
             &bind_group,
-            &[view_uniform_offset.offset, settings_index.index()],
+            &[
+                atmosphere_settings_index.index(),
+                view_uniform_offset.offset,
+                settings_index.index(),
+            ],
         );
         render_pass.draw(0..3, 0..1);
 
@@ -156,6 +209,14 @@ impl FromWorld for PostProcessPipeline {
             &BindGroupLayoutEntries::sequential(
                 ShaderStages::FRAGMENT,
                 (
+                    // atmosphere bindings
+                    uniform_buffer::<AtmosphereSettings>(true),
+                    texture_2d(TextureSampleType::Float { filterable: true }),
+                    sampler(SamplerBindingType::Filtering),
+                    texture_2d(TextureSampleType::Float { filterable: true }),
+                    sampler(SamplerBindingType::Filtering),
+                    texture_3d(TextureSampleType::Float { filterable: true }),
+                    sampler(SamplerBindingType::Filtering),
                     // Color texture
                     texture_2d(TextureSampleType::Float { filterable: true }),
                     // Depth texture - Change to multisampled

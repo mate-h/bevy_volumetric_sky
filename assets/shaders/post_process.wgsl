@@ -1,19 +1,20 @@
 #import bevy_render::view::View
 #import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
+#import atmosphere::{RenderSkyPS,GetAtmosphereParameters,uniformBuffer};
 
 struct PostProcessSettings {
     show_depth: f32,
 };
 
-@group(0) @binding(0)
+@group(0) @binding(7)
 var screen_texture: texture_2d<f32>;
-@group(0) @binding(1)
+@group(0) @binding(8)
 var depth_texture: texture_depth_multisampled_2d;
-@group(0) @binding(2)
+@group(0) @binding(9)
 var texture_sampler: sampler;
-@group(0) @binding(3)
+@group(0) @binding(10)
 var<uniform> view: View;
-@group(0) @binding(4)
+@group(0) @binding(11)
 var<uniform> settings: PostProcessSettings;
 
 
@@ -55,9 +56,20 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let ray_dir = GetViewRay(in.uv);
     let color = textureSample(screen_texture, texture_sampler, in.uv);
     let depth = textureLoad(depth_texture, vec2<i32>(in.position.xy), 0);
+    let dimensions = textureDimensions(screen_texture, 0);
+    let dimensionsF32 = vec2<f32>(dimensions.xy);
+
+    let atmosphere = GetAtmosphereParameters();
+    let WorldPos = vec3<f32>(0.0, atmosphere.BottomRadius, 0.0) + uniformBuffer.eye_position * 0.001;
+    let WorldDir = ray_dir;
+
+    var result = RenderSkyPS(in.uv, in.uv * dimensionsF32, dimensionsF32, WorldPos, WorldDir, depth);
+    
+    // calculate L
+    var L = result.L;
 
     let ray_uv = rd2uv(ray_dir);
 
     let new_color = vec4(renderTestCheckerboard(ray_uv), 1.0);
-    return mix(color, new_color, 0.01);
+    return vec4(L * 20.0, 1.0) + color;
 }

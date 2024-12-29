@@ -1,6 +1,12 @@
 use bevy::{
-    core_pipeline::core_3d::Camera3dDepthTextureUsage, prelude::*,
-    render::render_resource::TextureUsages,
+    core_pipeline::core_3d::Camera3dDepthTextureUsage,
+    log,
+    prelude::*,
+    render::{
+        extract_component::{ExtractComponentPlugin, UniformComponentPlugin},
+        extract_resource::ExtractResourcePlugin,
+        render_resource::TextureUsages,
+    },
 };
 use bevy_egui::EguiPlugin;
 
@@ -43,6 +49,7 @@ fn setup(
             ..default()
         },
         PanOrbitCamera::default(),
+        AtmosphereSettings::default(),
         PostProcessSettings {
             show_depth: 1.0,
             ..default()

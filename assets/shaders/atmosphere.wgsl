@@ -13,15 +13,15 @@ struct AtmosphereSettings {
     exposure: f32,
     multiple_scattering_factor: f32,
 }
-@group(0) @binding(2) var<uniform> uniformBuffer: AtmosphereSettings;
+@group(0) @binding(0) var<uniform> uniformBuffer: AtmosphereSettings;
 
 // LUTS
-@group(0) @binding(3) var transmittanceTexture: texture_2d<f32>;
-@group(0) @binding(4) var transmittanceTextureSampler: sampler;
-@group(0) @binding(5) var multipleScatteringTexture: texture_2d<f32>;
-@group(0) @binding(6) var multipleScatteringTextureSampler: sampler;
-@group(0) @binding(7) var cloudTexture: texture_3d<f32>;
-@group(0) @binding(8) var cloudTextureSampler: sampler;
+@group(0) @binding(1) var transmittanceTexture: texture_2d<f32>;
+@group(0) @binding(2) var transmittanceTextureSampler: sampler;
+@group(0) @binding(3) var multipleScatteringTexture: texture_2d<f32>;
+@group(0) @binding(4) var multipleScatteringTextureSampler: sampler;
+@group(0) @binding(5) var cloudTexture: texture_3d<f32>;
+@group(0) @binding(6) var cloudTextureSampler: sampler;
 
 var<private> PI: f32 = 3.1415926535897932384626433832795;
 var<private> PI_2: f32 = 6.283185307179586476925286766559;
@@ -196,6 +196,31 @@ fn RenderTransmittanceLutPS(pixPos: vec2<f32>, uv: vec2<f32>, texSizeF32: vec2<f
 
     // Optical depth to transmittance
     return vec4<f32>(transmittance, 1.0);
+}
+
+fn RenderSkyPS(uv: vec2<f32>, pixPos: vec2<f32>, texSizeF32: vec2<f32>, WorldPos: vec3<f32>, WorldDir: vec3<f32>, DepthBufferValue: f32) -> SingleScatteringResult {
+    var coords = vec2<i32>(uv * vec2<f32>(textureDimensions(multipleScatteringTexture, 0)));
+    var sampleA = textureSampleLevel(multipleScatteringTexture, multipleScatteringTextureSampler, uv, 0.0).rgb;
+
+    coords = vec2<i32>(uv * vec2<f32>(textureDimensions(transmittanceTexture, 0)));
+    var sampleB = textureSampleLevel(transmittanceTexture, transmittanceTextureSampler, uv, 0.0).rgb;
+
+    // sample the cloud texture
+    
+    var sampleC = textureSampleLevel(cloudTexture, cloudTextureSampler, vec3<f32>(0.0, 0.0, 0.0), 0.0).rgb;
+
+    var Atmosphere: AtmosphereParameters = GetAtmosphereParameters();
+
+    var eyePosition = uniformBuffer.eye_position;
+    var SunDir = uniformBuffer.sun_position;
+
+    const ground = false;
+    const SampleCountIni = 30.0;
+    const VariableSampleCount = true;
+    const MieRayPhase = true;
+    var result: SingleScatteringResult = IntegrateScatteredLuminance(pixPos, WorldPos, WorldDir, SunDir, Atmosphere, ground, SampleCountIni, DepthBufferValue, VariableSampleCount, MieRayPhase, defaultTMaxMax, texSizeF32);
+
+    return result;
 }
 
 // the max distance to ray march in meters
