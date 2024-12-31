@@ -231,7 +231,11 @@ impl FromWorld for PostProcessPipeline {
             ),
         );
 
-        let sampler = render_device.create_sampler(&SamplerDescriptor::default());
+        let sampler = render_device.create_sampler(&SamplerDescriptor {
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            ..default()
+        });
 
         let shader = world
             .resource::<AssetServer>()

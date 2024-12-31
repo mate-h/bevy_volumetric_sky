@@ -1,5 +1,6 @@
 use bevy::{
     asset::AssetMetaCheck,
+    core_pipeline::tonemapping::TonemappingPlugin,
     diagnostic::FrameTimeDiagnosticsPlugin,
     prelude::*,
     reflect::TypePath,

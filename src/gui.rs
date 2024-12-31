@@ -61,7 +61,7 @@ fn ui_system(
     mut camera_query: Query<&mut PanOrbitCamera>,
     mut post_process_settings: Query<&mut PostProcessSettings>,
     mut grid_query: Query<&mut Visibility, With<Grid>>,
-    atmosphere_settings: Query<&AtmosphereSettings>,
+    mut atmosphere_settings: Query<&mut AtmosphereSettings>,
     atmosphere_res: Res<AtmosphereResources>,
 ) {
     // let atmosphere = atmosphere.get_single().unwrap();
@@ -70,6 +70,11 @@ fn ui_system(
     let ms_texture_id = contexts.add_image(atmosphere_res.multiple_scattering_texture.clone_weak());
     let transmittance_texture_id =
         contexts.add_image(atmosphere_res.transmittance_texture.clone_weak());
+    let env_texture_id = contexts.add_image(
+        atmosphere_res
+            .diffuse_irradiance_compute_target
+            .clone_weak(),
+    );
     let ctx = contexts.ctx_mut();
 
     egui::Window::new("")
@@ -129,10 +134,10 @@ fn ui_system(
             let blue_400 = Color32::from_hex(tailwind::BLUE_400.to_hex().as_str()).unwrap();
             ui.colored_label(blue_400, "Atmosphere");
 
-            // ui.image(egui::load::SizedTexture::new(
-            //     texture_id,
-            //     egui::vec2(256.0, 256.0),
-            // ));
+            ui.image(egui::load::SizedTexture::new(
+                env_texture_id,
+                egui::vec2(256.0 / 8.0, 256.0 * 6.0 / 8.0),
+            ));
 
             ui.image(egui::load::SizedTexture::new(
                 transmittance_texture_id,
@@ -144,10 +149,38 @@ fn ui_system(
                 egui::vec2(32.0, 32.0),
             ));
 
-            // Luts
-            // if let Ok(mut settings) = atmo.get_single_mut() {
-            //     ui.add(egui::Slider::new(&mut settings.value, 0.0..=1.0).text("Value"));
-            // }
+            // ui.image(egui::load::SizedTexture::new(
+            //     env_texture_id,
+            //     egui::vec2(256.0, 256.0),
+            // ));
+
+            // Sun position controls
+            if let Ok(mut settings) = atmosphere_settings.get_single_mut() {
+                let mut theta = (-settings.sun_position.y).acos(); // altitude angle
+                let mut phi = settings.sun_position.x.atan2(settings.sun_position.z); // azimuth angle
+
+                ui.add(
+                    egui::Slider::new(&mut theta, 0.0..=std::f32::consts::PI).text("Sun Altitude"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut phi, -std::f32::consts::PI..=std::f32::consts::PI)
+                        .text("Sun Azimuth"),
+                );
+
+                // Convert spherical coordinates to cartesian (normalized)
+                settings.sun_position = Vec3::new(
+                    phi.sin() * theta.sin(),
+                    -theta.cos(), // negative because y is up
+                    phi.cos() * theta.sin(),
+                );
+            }
+
+            if let Ok(mut settings) = atmosphere_settings.get_single_mut() {
+                let mut show = settings.multiple_scattering_factor != 0.0;
+                if ui.checkbox(&mut show, "Multiple Scattering").clicked() {
+                    settings.multiple_scattering_factor = show as u32 as f32;
+                }
+            }
 
             // Post process
             if let Ok(mut settings) = post_process_settings.get_single_mut() {

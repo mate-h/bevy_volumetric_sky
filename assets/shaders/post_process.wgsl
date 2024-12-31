@@ -60,7 +60,8 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let dimensionsF32 = vec2<f32>(dimensions.xy);
 
     let atmosphere = GetAtmosphereParameters();
-    let WorldPos = vec3<f32>(0.0, atmosphere.BottomRadius, 0.0) + uniformBuffer.eye_position * 0.001;
+    // units are in km
+    let WorldPos = vec3<f32>(0.0, atmosphere.BottomRadius, 0.0) + (uniformBuffer.eye_position + view.world_position) * 0.001;
     let WorldDir = ray_dir;
 
     var result = RenderSkyPS(in.uv, in.uv * dimensionsF32, dimensionsF32, WorldPos, WorldDir, depth);

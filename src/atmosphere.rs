@@ -1,7 +1,9 @@
-use bevy::prelude::*;
-use bevy::render::extract_component::ExtractComponent;
-use bevy::render::extract_resource::ExtractResource;
-use bevy::render::render_resource::*;
+use bevy::{
+    prelude::*,
+    render::{
+        extract_component::ExtractComponent, extract_resource::ExtractResource, render_resource::*,
+    },
+};
 
 #[derive(Clone, Resource, ExtractResource)]
 pub struct AtmosphereResources {
@@ -9,6 +11,8 @@ pub struct AtmosphereResources {
     pub multiple_scattering_texture: Handle<Image>,
     pub cloud_texture: Handle<Image>,
     pub placeholder: Handle<Image>,
+    pub diffuse_irradiance_compute_target: Handle<Image>,
+    pub diffuse_irradiance_cubemap: Handle<Image>,
 }
 
 #[derive(Component, Clone, Copy, ExtractComponent, ShaderType)]
@@ -31,7 +35,8 @@ impl Default for AtmosphereSettings {
         Self {
             // sunset towards the horizon
             sun_position: Vec3::new(0.0, 0.0, -1.0),
-            eye_position: Vec3::new(0.0, 1000.0, 0.0),
+            // 200m above the ground
+            eye_position: Vec3::new(0.0, 200.0, 0.0),
             sun_intensity: 22.0,
             rayleigh_scattering: Vec3::new(5.802, 13.558, 33.1),
             mie_scattering: Vec3::new(3.996, 3.996, 3.996),

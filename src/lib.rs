@@ -1,11 +1,11 @@
 use bevy::{
-    core_pipeline::core_3d::Camera3dDepthTextureUsage,
+    asset::RenderAssetUsages,
+    core_pipeline::{core_3d::Camera3dDepthTextureUsage, Skybox},
     log,
     prelude::*,
-    render::{
-        extract_component::{ExtractComponentPlugin, UniformComponentPlugin},
-        extract_resource::ExtractResourcePlugin,
-        render_resource::TextureUsages,
+    render::render_resource::{
+        Extent3d, TextureDimension, TextureFormat, TextureUsages, TextureViewDescriptor,
+        TextureViewDimension,
     },
 };
 use bevy_egui::EguiPlugin;
@@ -22,18 +22,56 @@ impl Plugin for VolumetricSkyPlugin {
         app.add_plugins((
             compute::ComputeShaderPlugin,
             EguiPlugin,
-            post_process::PostProcessPlugin,
+            // post_process::PostProcessPlugin,
             gui::GuiPlugin,
         ))
-        .add_systems(Startup, setup);
+        .add_systems(Startup, setup)
+        .add_systems(Update, update_sky_environment);
     }
+}
+
+fn update_sky_environment(
+    atmosphere_res: Res<AtmosphereResources>,
+    mut images: ResMut<Assets<Image>>,
+    mut query: Query<(&AtmosphereSettings, &mut Skybox, &mut EnvironmentMapLight)>,
+) {
+    for (atmosphere, mut skybox, mut env_map) in query.iter_mut() {
+        skybox.image = atmosphere_res.diffuse_irradiance_cubemap.clone();
+        env_map.diffuse_map = atmosphere_res.diffuse_irradiance_cubemap.clone();
+        env_map.specular_map = atmosphere_res.diffuse_irradiance_cubemap.clone();
+    }
+}
+
+fn create_placeholder_skybox_texture(mut images: ResMut<Assets<Image>>) -> Handle<Image> {
+    // Create a 1x1x6 cubemap texture
+    let mut image = Image::new_fill(
+        Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 6, // 6 faces for cubemap
+        },
+        TextureDimension::D2,
+        &[0, 0, 0, 255], // Black color with full alpha
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::all(),
+    );
+
+    image.texture_view_descriptor = Some(TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::Cube),
+        ..default()
+    });
+
+    images.add(image)
 }
 
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    images: ResMut<Assets<Image>>,
 ) {
+    let skybox_handle = create_placeholder_skybox_texture(images);
+
     commands.spawn((
         Transform::from_xyz(0.0, 0.0, 0.0),
         Mesh3d(meshes.add(Cuboid::default())),
@@ -52,6 +90,17 @@ fn setup(
         AtmosphereSettings::default(),
         PostProcessSettings {
             show_depth: 1.0,
+            ..default()
+        },
+        Skybox {
+            brightness: 1000.0,
+            image: skybox_handle.clone(),
+            ..default()
+        },
+        EnvironmentMapLight {
+            intensity: 1000.0,
+            diffuse_map: skybox_handle.clone(),
+            specular_map: skybox_handle,
             ..default()
         },
     ));
