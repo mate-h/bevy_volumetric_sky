@@ -27,3 +27,5 @@ target
 wasm
 .vercel
 .vercelignore
+
+assets/models/SubaruWRX

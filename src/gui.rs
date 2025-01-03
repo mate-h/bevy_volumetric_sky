@@ -1,3 +1,6 @@
+use std::borrow::BorrowMut;
+use std::f32::consts::PI;
+
 use crate::atmosphere::{AtmosphereResources, AtmosphereSettings};
 use crate::post_process::PostProcessSettings;
 use bevy::color::palettes::tailwind;
@@ -18,6 +21,25 @@ pub struct EguiInteractionState {
     pub camera_interaction_active: bool,
 }
 
+#[derive(Resource)]
+pub struct SunPositionState {
+    pub target_theta: f32, // altitude angle
+    pub target_phi: f32,   // azimuth angle
+    pub current_theta: f32,
+    pub current_phi: f32,
+}
+
+impl Default for SunPositionState {
+    fn default() -> Self {
+        Self {
+            target_theta: PI / 2.0,
+            target_phi: 0.0,
+            current_theta: PI / 2.0,
+            current_phi: 0.0,
+        }
+    }
+}
+
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
 pub struct PanOrbitCameraSystemSet;
 
@@ -26,13 +48,21 @@ pub struct GuiPlugin;
 impl Plugin for GuiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EguiInteractionState>()
+            .init_resource::<SunPositionState>()
             .add_systems(
                 PreUpdate,
                 check_egui_wants_focus
                     .after(EguiSet::BeginPass)
                     .before(PanOrbitCameraSystemSet),
             )
-            .add_systems(Update, (ui_system, handle_camera_block.after(ui_system)));
+            .add_systems(
+                Update,
+                (
+                    ui_system,
+                    handle_camera_block.after(ui_system),
+                    update_sun_position.after(ui_system),
+                ),
+            );
     }
 }
 
@@ -63,6 +93,7 @@ fn ui_system(
     mut grid_query: Query<&mut Visibility, With<Grid>>,
     mut atmosphere_settings: Query<&mut AtmosphereSettings>,
     atmosphere_res: Res<AtmosphereResources>,
+    mut sun_position_state: ResMut<SunPositionState>,
 ) {
     // let atmosphere = atmosphere.get_single().unwrap();
     // log::info!("Atmosphere: {:?}", atmosphere.atmosphere_height);
@@ -134,44 +165,20 @@ fn ui_system(
             let blue_400 = Color32::from_hex(tailwind::BLUE_400.to_hex().as_str()).unwrap();
             ui.colored_label(blue_400, "Atmosphere");
 
-            ui.image(egui::load::SizedTexture::new(
-                env_texture_id,
-                egui::vec2(256.0 / 8.0, 256.0 * 6.0 / 8.0),
-            ));
-
-            ui.image(egui::load::SizedTexture::new(
-                transmittance_texture_id,
-                egui::vec2(256.0, 64.0),
-            ));
-
-            ui.image(egui::load::SizedTexture::new(
-                ms_texture_id,
-                egui::vec2(32.0, 32.0),
-            ));
-
             // ui.image(egui::load::SizedTexture::new(
             //     env_texture_id,
             //     egui::vec2(256.0, 256.0),
             // ));
-
             // Sun position controls
-            if let Ok(mut settings) = atmosphere_settings.get_single_mut() {
-                let mut theta = (-settings.sun_position.y).acos(); // altitude angle
-                let mut phi = settings.sun_position.x.atan2(settings.sun_position.z); // azimuth angle
+            ui.add(
+                egui::Slider::new(&mut sun_position_state.target_theta, 0.0..=PI)
+                    .text("Sun Altitude"),
+            );
 
+            if sun_position_state.target_theta != 0.0 && sun_position_state.target_theta != PI {
                 ui.add(
-                    egui::Slider::new(&mut theta, 0.0..=std::f32::consts::PI).text("Sun Altitude"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut phi, -std::f32::consts::PI..=std::f32::consts::PI)
+                    egui::Slider::new(&mut sun_position_state.target_phi, -PI..=PI)
                         .text("Sun Azimuth"),
-                );
-
-                // Convert spherical coordinates to cartesian (normalized)
-                settings.sun_position = Vec3::new(
-                    phi.sin() * theta.sin(),
-                    -theta.cos(), // negative because y is up
-                    phi.cos() * theta.sin(),
                 );
             }
 
@@ -189,6 +196,21 @@ fn ui_system(
                     settings.show_depth = show as u32 as f32;
                 }
             }
+
+            ui.image(egui::load::SizedTexture::new(
+                env_texture_id,
+                egui::vec2(256.0 / 8.0, 256.0 * 6.0 / 8.0),
+            ));
+
+            ui.image(egui::load::SizedTexture::new(
+                transmittance_texture_id,
+                egui::vec2(256.0, 64.0),
+            ));
+
+            ui.image(egui::load::SizedTexture::new(
+                ms_texture_id,
+                egui::vec2(32.0, 32.0),
+            ));
         });
 }
 
@@ -217,4 +239,38 @@ fn handle_camera_block(
     } else if let Ok(mut camera) = camera_query.get_single_mut() {
         camera.enabled = true;
     }
+}
+
+fn update_sun_position(
+    mut sun_state: ResMut<SunPositionState>,
+    mut atmosphere_settings: Query<&mut AtmosphereSettings>,
+    time: Res<Time>,
+) {
+    const LERP_SPEED: f32 = 2.0;
+
+    // Lerp the current angles towards target
+    sun_state.current_theta = lerp(
+        sun_state.current_theta,
+        sun_state.target_theta,
+        LERP_SPEED * time.delta_secs(),
+    );
+
+    sun_state.current_phi = lerp(
+        sun_state.current_phi,
+        sun_state.target_phi,
+        LERP_SPEED * time.delta_secs(),
+    );
+
+    // Update the actual sun position
+    if let Ok(mut settings) = atmosphere_settings.get_single_mut() {
+        settings.sun_position = Vec3::new(
+            sun_state.current_phi.sin() * sun_state.current_theta.sin(),
+            -sun_state.current_theta.cos(),
+            sun_state.current_phi.cos() * sun_state.current_theta.sin(),
+        );
+    }
+}
+
+fn lerp(start: f32, end: f32, t: f32) -> f32 {
+    start + (end - start) * t.clamp(0.0, 1.0)
 }
