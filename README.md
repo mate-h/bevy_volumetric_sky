@@ -1,5 +1,7 @@
 # Bevy Volumetric Sky
 
+<img src="./assets/thumb.png" alt="Sky Model" width="512">
+
 A volumetric sky plugin for Bevy based on the Unreal Engine Atmospheric Shader paper published by Sebastian Hillaire.
 
 Running Native app:
