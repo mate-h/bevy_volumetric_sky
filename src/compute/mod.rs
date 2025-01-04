@@ -52,7 +52,12 @@ impl Plugin for ComputeShaderPlugin {
             AtmosphereLutNode::new(ComputeLabel::MultipleScatteringLUT),
         );
 
-        render_graph.add_node(ComputeLabel::DiffuseRadiance, RadianceMapNode::default());
+        render_graph.add_node(ComputeLabel::RadianceMaps, RadianceMapNode::default());
+
+        render_graph.add_node(
+            ComputeLabel::SunTransmittance,
+            AtmosphereLutNode::new(ComputeLabel::SunTransmittance),
+        );
 
         // Add dependencies
         render_graph.add_node_edge(
@@ -62,7 +67,12 @@ impl Plugin for ComputeShaderPlugin {
 
         render_graph.add_node_edge(
             ComputeLabel::MultipleScatteringLUT,
-            ComputeLabel::DiffuseRadiance,
+            ComputeLabel::RadianceMaps,
+        );
+
+        render_graph.add_node_edge(
+            ComputeLabel::TransmittanceLUT,
+            ComputeLabel::SunTransmittance,
         );
     }
 

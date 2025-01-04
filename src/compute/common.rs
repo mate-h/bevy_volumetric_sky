@@ -19,8 +19,8 @@ pub enum ComputeLabel {
     MultipleScatteringLUT,
     SkyViewLUT,
     CloudVolume,
-    SpecularRadiance,
-    DiffuseRadiance,
+    RadianceMaps,
+    SunTransmittance,
 }
 
 pub fn setup_atmosphere_resources(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
@@ -72,35 +72,44 @@ pub fn setup_atmosphere_resources(mut commands: Commands, mut images: ResMut<Ass
         RenderAssetUsages::all(),
     ));
 
-    let placeholder = images.add(Image::new(
+    // Create placeholder texture
+    let mut placeholder = Image::new(
         Extent3d {
             width: 1,
             height: 1,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        bytemuck::cast_slice(&vec![0f32; 1 * 1 * 4]).to_vec(),
+        bytemuck::cast_slice(&vec![0f32; 4]).to_vec(),
         TextureFormat::Rgba32Float,
         RenderAssetUsages::all(),
-    ));
+    );
 
-    // Create compute target (2D storage texture)
-    let mut compute_target = Image::new(
+    placeholder.texture_descriptor.usage =
+        TextureUsages::COPY_DST | TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING;
+
+    let placeholder = images.add(placeholder);
+
+    // Create compute target
+    let mut diffuse_compute_target = Image::new(
         Extent3d {
             width: 256,
             height: 256 * 6,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        bytemuck::cast_slice(&vec![1f32; 256 * 256 * 6 * 4]).to_vec(),
+        bytemuck::cast_slice(&vec![0f32; 256 * 256 * 6 * 4]).to_vec(),
         TextureFormat::Rgba32Float,
         RenderAssetUsages::all(),
     );
-    compute_target.texture_descriptor.usage =
-        TextureUsages::COPY_SRC | TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING;
+
+    diffuse_compute_target.texture_descriptor.usage = TextureUsages::COPY_DST
+        | TextureUsages::STORAGE_BINDING
+        | TextureUsages::TEXTURE_BINDING
+        | TextureUsages::COPY_SRC;
 
     // Create cubemap target
-    let mut cubemap = Image::new(
+    let mut diffuse_cubemap = Image::new(
         Extent3d {
             width: 256,
             height: 256,
@@ -111,23 +120,85 @@ pub fn setup_atmosphere_resources(mut commands: Commands, mut images: ResMut<Ass
         TextureFormat::Rgba32Float,
         RenderAssetUsages::all(),
     );
-    cubemap.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
-    cubemap.texture_view_descriptor = Some(TextureViewDescriptor {
+    diffuse_cubemap.texture_descriptor.usage =
+        TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
+    diffuse_cubemap.texture_view_descriptor = Some(TextureViewDescriptor {
         dimension: Some(TextureViewDimension::Cube),
         ..default()
     });
 
-    let compute_target_handle = images.add(compute_target);
-    let cubemap_handle = images.add(cubemap);
+    let diffuse_compute_target_handle = images.add(diffuse_compute_target);
+    let diffuse_cubemap_handle = images.add(diffuse_cubemap);
+
+    // create the specular maps
+    let mut specular_compute_target = Image::new(
+        Extent3d {
+            width: 256,
+            height: 256 * 6,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        bytemuck::cast_slice(&vec![0f32; 256 * 256 * 6 * 4]).to_vec(),
+        TextureFormat::Rgba32Float,
+        RenderAssetUsages::all(),
+    );
+
+    specular_compute_target.texture_descriptor.usage = TextureUsages::COPY_DST
+        | TextureUsages::STORAGE_BINDING
+        | TextureUsages::TEXTURE_BINDING
+        | TextureUsages::COPY_SRC;
+
+    let specular_compute_target_handle = images.add(specular_compute_target);
+
+    let mut specular_cubemap = Image::new(
+        Extent3d {
+            width: 256,
+            height: 256,
+            depth_or_array_layers: 6,
+        },
+        TextureDimension::D2,
+        bytemuck::cast_slice(&vec![0f32; 256 * 256 * 6 * 4]).to_vec(),
+        TextureFormat::Rgba32Float,
+        RenderAssetUsages::all(),
+    );
+    specular_cubemap.texture_descriptor.usage =
+        TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING;
+    specular_cubemap.texture_view_descriptor = Some(TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::Cube),
+        ..default()
+    });
+
+    let specular_cubemap_handle = images.add(specular_cubemap);
+
+    // Create sun transmittance texture
+    let mut sun_transmittance = Image::new(
+        Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        bytemuck::cast_slice(&vec![0f32; 4]).to_vec(),
+        TextureFormat::Rgba32Float,
+        RenderAssetUsages::all(),
+    );
+
+    sun_transmittance.texture_descriptor.usage = TextureUsages::COPY_DST
+        | TextureUsages::STORAGE_BINDING
+        | TextureUsages::TEXTURE_BINDING
+        | TextureUsages::COPY_SRC;
+
+    let sun_transmittance_handle = images.add(sun_transmittance);
 
     commands.insert_resource(AtmosphereResources {
         transmittance_texture,
         multiple_scattering_texture,
         cloud_texture,
         placeholder,
-        diffuse_irradiance_compute_target: compute_target_handle,
-        diffuse_irradiance_cubemap: cubemap_handle,
-        // environment_diffuse_cubemap,
-        // specular_irradiance_map,
+        diffuse_irradiance_compute_target: diffuse_compute_target_handle,
+        diffuse_irradiance_cubemap: diffuse_cubemap_handle,
+        specular_radiance_compute_target: specular_compute_target_handle,
+        specular_radiance_cubemap: specular_cubemap_handle,
+        sun_transmittance_texture: sun_transmittance_handle,
     });
 }

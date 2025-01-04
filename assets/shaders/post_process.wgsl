@@ -1,9 +1,9 @@
 #import bevy_render::view::View
 #import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
-#import atmosphere::{RenderSkyPS,GetAtmosphereParameters,uniformBuffer};
+#import atmosphere::{RenderSkyPS,GetAtmosphereParameters,uniformBuffer,view};
 
 struct PostProcessSettings {
-    show_depth: f32,
+    show: f32,
 };
 
 @group(0) @binding(7)
@@ -12,11 +12,11 @@ var screen_texture: texture_2d<f32>;
 var depth_texture: texture_depth_multisampled_2d;
 @group(0) @binding(9)
 var texture_sampler: sampler;
-@group(0) @binding(10)
-var<uniform> view: View;
+
 @group(0) @binding(11)
 var<uniform> settings: PostProcessSettings;
 
+#define USE_DEPTH_BUFFER
 
 var<private> PI: f32 = 3.1415926535897932384626433832795;
 var<private> PI_2: f32 = 6.283185307179586476925286766559;
@@ -60,17 +60,24 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let dimensionsF32 = vec2<f32>(dimensions.xy);
 
     let atmosphere = GetAtmosphereParameters();
-    // units are in km
-    let WorldPos = vec3<f32>(0.0, atmosphere.BottomRadius, 0.0) + (uniformBuffer.eye_position + view.world_position) * 0.001;
+    // Note: units are in km - this is phyisically incorrect, object will appear 1000x larger than they actually are
+    // if we scale the world position by 0.001, the depth calculation will be incorrect in the raymarching loop
+    // because it uses the view.world_from_clip matrix. therefore we need to switch to using meters instead of km everywhere
+    let WorldPos = vec3<f32>(0.0, atmosphere.BottomRadius, 0.0) + uniformBuffer.eye_position + view.world_position;
     let WorldDir = ray_dir;
+
+    // discard fragment where no depth is available
+    if (depth <= 0.0 || settings.show == 0.0) {
+        return vec4(color.rgb, 1.0);
+    }
 
     var result = RenderSkyPS(in.uv, in.uv * dimensionsF32, dimensionsF32, WorldPos, WorldDir, depth);
     
-    // calculate L
+    // calculate L (inscattering)
     var L = result.L;
 
     let ray_uv = rd2uv(ray_dir);
 
     let new_color = vec4(renderTestCheckerboard(ray_uv), 1.0);
-    return vec4(L * 20.0, 1.0) + color;
+    return vec4(L + color.rgb, 1.0);
 }

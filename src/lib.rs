@@ -2,15 +2,17 @@ use std::f32::consts::PI;
 
 use bevy::{
     asset::RenderAssetUsages,
-    color::palettes::css::GOLD,
     core_pipeline::{core_3d::Camera3dDepthTextureUsage, tonemapping::Tonemapping, Skybox},
-    image::ImageLoaderSettings,
+    gltf::GltfMaterialName,
     log,
-    pbr::{CascadeShadowConfigBuilder, ShadowFilteringMethod},
+    pbr::{CascadeShadowConfigBuilder, NotShadowCaster, NotShadowReceiver},
     prelude::*,
-    render::render_resource::{
-        Extent3d, TextureDimension, TextureFormat, TextureUsages, TextureViewDescriptor,
-        TextureViewDimension,
+    render::{
+        gpu_readback::{Readback, ReadbackComplete},
+        render_resource::{
+            Extent3d, TextureDimension, TextureFormat, TextureUsages, TextureViewDescriptor,
+            TextureViewDimension,
+        },
     },
 };
 use bevy_egui::EguiPlugin;
@@ -22,28 +24,42 @@ mod post_process;
 
 pub struct VolumetricSkyPlugin;
 
+#[derive(Event)]
+struct TransmittanceUpdate(Vec3);
+
+#[derive(Component)]
+pub struct Ground;
+
 impl Plugin for VolumetricSkyPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             compute::ComputeShaderPlugin,
             EguiPlugin,
-            // post_process::PostProcessPlugin,
+            post_process::PostProcessPlugin,
             gui::GuiPlugin,
         ))
+        .add_event::<TransmittanceUpdate>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (update_sky_environment, update_sun_direction));
+        .add_systems(
+            Update,
+            (
+                update_sky_environment,
+                update_sun_direction,
+                handle_readback_events,
+                find_plane_and_remove_shadow,
+            ),
+        );
     }
 }
 
 fn update_sky_environment(
     atmosphere_res: Res<AtmosphereResources>,
-    mut images: ResMut<Assets<Image>>,
-    mut query: Query<(&AtmosphereSettings, &mut Skybox, &mut EnvironmentMapLight)>,
+    mut query: Query<(&mut Skybox, &mut EnvironmentMapLight)>,
 ) {
-    for (atmosphere, mut skybox, mut env_map) in query.iter_mut() {
-        skybox.image = atmosphere_res.diffuse_irradiance_cubemap.clone();
+    for (mut skybox, mut env_map) in query.iter_mut() {
+        skybox.image = atmosphere_res.specular_radiance_cubemap.clone();
         env_map.diffuse_map = atmosphere_res.diffuse_irradiance_cubemap.clone();
-        env_map.specular_map = atmosphere_res.diffuse_irradiance_cubemap.clone();
+        env_map.specular_map = atmosphere_res.specular_radiance_cubemap.clone();
     }
 }
 
@@ -69,47 +85,20 @@ fn create_placeholder_skybox_texture(mut images: ResMut<Assets<Image>>) -> Handl
     images.add(image)
 }
 
-/// Generates a sphere.
-fn create_sphere_mesh(meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
-    // We're going to use normal maps, so make sure we've generated tangents, or
-    // else the normal maps won't show up.
-
-    let mut sphere_mesh = Sphere::new(1.0).mesh().build();
-    sphere_mesh
-        .generate_tangents()
-        .expect("Failed to generate tangents");
-    meshes.add(sphere_mesh)
-}
-
 fn create_ground_plane_mesh(meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
-    let plane_mesh = Plane3d::new(Vec3::new(0.0, 1.0, 0.0), Vec2::new(10.0, 10.0))
+    let plane_mesh = Plane3d::new(Vec3::new(0.0, 1.0, 0.0), Vec2::new(1000.0, 1000.0))
         .mesh()
         .build();
     meshes.add(plane_mesh)
 }
 
-fn spawn_sphere(
-    commands: &mut Commands,
-    materials: &mut Assets<StandardMaterial>,
-    asset_server: &AssetServer,
-    sphere_mesh: &Handle<Mesh>,
-) {
-    commands.spawn((
-        Mesh3d(sphere_mesh.clone()),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            clearcoat: 1.0,
-            clearcoat_perceptual_roughness: 0.3,
-            clearcoat_normal_texture: Some(asset_server.load_with_settings(
-                "ScratchedGold-Normal.png",
-                |settings: &mut ImageLoaderSettings| settings.is_srgb = false,
-            )),
-            metallic: 0.9,
-            perceptual_roughness: 0.1,
-            base_color: GOLD.into(),
-            ..default()
-        })),
-        Transform::from_xyz(0.0, 0.0, 0.0).with_scale(Vec3::splat(1.25)),
-    ));
+fn find_plane_and_remove_shadow(mut commands: Commands, query: Query<(Entity, &GltfMaterialName)>) {
+    for (entity, name) in query.iter() {
+        if name.0 == "Material" {
+            commands.entity(entity).insert(NotShadowCaster);
+            commands.entity(entity).insert(NotShadowReceiver);
+        }
+    }
 }
 
 fn setup(
@@ -118,23 +107,20 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
     images: ResMut<Assets<Image>>,
+    atmosphere_res: Res<AtmosphereResources>,
 ) {
-    // let sphere_mesh = create_sphere_mesh(&mut meshes);
-    // spawn_sphere(&mut commands, &mut materials, &asset_server, &sphere_mesh);
-
     let skybox_handle = create_placeholder_skybox_texture(images);
-    // commands.spawn((
-    //     Transform::from_xyz(0.0, 0.0, 0.0),
-    //     Mesh3d(meshes.add(Cuboid::default())),
-    //     MeshMaterial3d(materials.add(Color::WHITE)),
-    // ));
 
+    // Spawn the GLTF scene
     commands.spawn((
         SceneRoot(
             asset_server
-                .load(GltfAssetLabel::Scene(0).from_asset("models/FlightHelmet/FlightHelmet.gltf")),
+                // .load(GltfAssetLabel::Scene(0).from_asset("models/FlightHelmet/FlightHelmet.gltf")),
+                .load(
+                    GltfAssetLabel::Scene(0).from_asset("models/porsche_911_carrera_4s/scene.gltf"),
+                ),
         ),
-        Transform::from_xyz(0.0, 0.0, 0.0),
+        Transform::from_xyz(0.0, 0.6667, 0.0),
     ));
 
     // spawn ground plane
@@ -142,8 +128,12 @@ fn setup(
     commands.spawn((
         Mesh3d(ground_plane_mesh),
         MeshMaterial3d(materials.add(Color::WHITE)),
+        Transform::from_xyz(0.0, -0.001, 0.0),
+        Visibility::Visible,
+        Ground,
     ));
 
+    // Spawn the directional light
     commands.spawn((
         DirectionalLight {
             shadows_enabled: true,
@@ -152,6 +142,19 @@ fn setup(
         Transform::from_rotation(Quat::from_euler(EulerRot::ZYX, 0.0, PI / 2., -PI / 4.)),
         CascadeShadowConfigBuilder::default().build(),
     ));
+
+    // Readback component with an observer
+    commands
+        .spawn(Readback::texture(
+            atmosphere_res.sun_transmittance_texture.clone(),
+        ))
+        .observe(
+            |trigger: Trigger<ReadbackComplete>, mut events: EventWriter<TransmittanceUpdate>| {
+                let transmittance: Vec<f32> = trigger.event().to_shader_type();
+                let transmittance = Vec3::new(transmittance[0], transmittance[1], transmittance[2]);
+                events.send(TransmittanceUpdate(transmittance));
+            },
+        );
 
     commands.spawn((
         Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
@@ -167,24 +170,25 @@ fn setup(
         },
         Tonemapping::AcesFitted,
         PanOrbitCamera {
-            radius: Some(2.0),
-            pitch: Some(-8.0 * PI / 180.0),
-            yaw: Some(-22.0 * PI / 180.0),
+            radius: Some(6.0),
+            pitch: Some(6.0 * PI / 180.0),
+            yaw: Some(22.0 * PI / 180.0),
             focus: Vec3::new(0.0, 0.5, 0.0),
             ..default()
         },
         AtmosphereSettings::default(),
         PostProcessSettings {
-            show_depth: 1.0,
+            show: 1.0,
             ..default()
         },
         Skybox {
-            brightness: 1000.0,
+            // not sure why 5000 multiplier is needed here but seems to result in the correct exposure
+            brightness: 5000.0,
             image: skybox_handle.clone(),
             ..default()
         },
         EnvironmentMapLight {
-            intensity: 1000.0,
+            intensity: 5000.0,
             diffuse_map: skybox_handle.clone(),
             specular_map: skybox_handle,
             ..default()
@@ -197,7 +201,7 @@ pub use atmosphere::{AtmosphereResources, AtmosphereSettings};
 use bevy_panorbit_camera::PanOrbitCamera;
 pub use post_process::PostProcessSettings;
 
-// Add this new system to update the directional light
+// Update the directional light direction
 fn update_sun_direction(
     atmosphere_query: Query<&AtmosphereSettings>,
     mut light_query: Query<&mut Transform, With<DirectionalLight>>,
@@ -213,6 +217,19 @@ fn update_sun_direction(
             .normalize();
             let rotation = Quat::from_rotation_arc(up, sun_dir);
             *light_transform = Transform::from_rotation(rotation);
+        }
+    }
+}
+
+// Update the directional light color
+fn handle_readback_events(
+    mut light_query: Query<&mut DirectionalLight>,
+    mut transmittance_events: EventReader<TransmittanceUpdate>,
+) {
+    if let Ok(mut light) = light_query.get_single_mut() {
+        for event in transmittance_events.read() {
+            let transmittance = event.0;
+            light.color = Color::srgb(transmittance.x, transmittance.y, transmittance.z);
         }
     }
 }

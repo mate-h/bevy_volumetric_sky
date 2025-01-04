@@ -21,7 +21,8 @@ use crate::atmosphere::{AtmosphereResources, AtmosphereSettings};
 #[derive(Resource)]
 pub struct RadianceMapPipeline {
     bind_group_layout: BindGroupLayout,
-    pipeline: CachedComputePipelineId,
+    specular_radiance_pipeline: CachedComputePipelineId,
+    diffuse_radiance_pipeline: CachedComputePipelineId,
     sampler: Sampler,
 }
 
@@ -42,6 +43,9 @@ impl FromWorld for RadianceMapPipeline {
                     sampler(SamplerBindingType::Filtering),
                     texture_3d(TextureSampleType::Float { filterable: true }),
                     sampler(SamplerBindingType::Filtering),
+                    // specular texture for diffuse computation
+                    texture_2d(TextureSampleType::Float { filterable: true }),
+                    sampler(SamplerBindingType::Filtering),
                     // output texture and globals
                     uniform_buffer::<GlobalsUniform>(false),
                     texture_storage_2d(TextureFormat::Rgba32Float, StorageTextureAccess::WriteOnly),
@@ -53,15 +57,27 @@ impl FromWorld for RadianceMapPipeline {
 
         let pipeline_cache = world.resource::<PipelineCache>();
 
-        let pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
-            label: Some("radiance_map_pipeline".into()),
-            layout: vec![bind_group_layout.clone()],
-            push_constant_ranges: Vec::new(),
-            shader,
-            shader_defs: vec![],
-            entry_point: Cow::from("main"),
-            zero_initialize_workgroup_memory: false,
-        });
+        let specular_radiance_pipeline =
+            pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+                label: Some("radiance_map_pipeline".into()),
+                layout: vec![bind_group_layout.clone()],
+                push_constant_ranges: Vec::new(),
+                shader: shader.clone(),
+                shader_defs: vec![],
+                entry_point: Cow::from("specular_radiance"),
+                zero_initialize_workgroup_memory: false,
+            });
+
+        let diffuse_radiance_pipeline =
+            pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+                label: Some("diffuse_radiance_pipeline".into()),
+                layout: vec![bind_group_layout.clone()],
+                push_constant_ranges: Vec::new(),
+                shader,
+                shader_defs: vec![],
+                entry_point: Cow::from("diffuse_radiance"),
+                zero_initialize_workgroup_memory: false,
+            });
 
         let sampler = render_device.create_sampler(&SamplerDescriptor {
             mag_filter: FilterMode::Linear,
@@ -71,7 +87,8 @@ impl FromWorld for RadianceMapPipeline {
 
         RadianceMapPipeline {
             bind_group_layout,
-            pipeline,
+            specular_radiance_pipeline,
+            diffuse_radiance_pipeline,
             sampler,
         }
     }
@@ -101,7 +118,7 @@ impl Node for RadianceMapNode {
 
         if let ComputeState::Loading = self.state {
             if let CachedPipelineState::Ok(_) =
-                pipeline_cache.get_compute_pipeline_state(pipeline.pipeline)
+                pipeline_cache.get_compute_pipeline_state(pipeline.specular_radiance_pipeline)
             {
                 self.state = ComputeState::Ready;
             }
@@ -128,6 +145,11 @@ impl Node for RadianceMapNode {
                 return Ok(());
             };
 
+            let Some(placeholder_texture) = gpu_images.get(&atmosphere.placeholder) else {
+                log::error!("Placeholder texture not found");
+                return Ok(());
+            };
+
             let Some(transmittance_texture) = gpu_images.get(&atmosphere.transmittance_texture)
             else {
                 log::error!("Transmittance texture not found");
@@ -138,6 +160,13 @@ impl Node for RadianceMapNode {
                 gpu_images.get(&atmosphere.diffuse_irradiance_compute_target)
             else {
                 log::error!("Diffuse irradiance map not found");
+                return Ok(());
+            };
+
+            let Some(specular_radiance_compute_target) =
+                gpu_images.get(&atmosphere.specular_radiance_compute_target)
+            else {
+                log::error!("Specular radiance map not found");
                 return Ok(());
             };
 
@@ -153,29 +182,73 @@ impl Node for RadianceMapNode {
                 return Ok(());
             };
 
-            let bind_group = render_context.render_device().create_bind_group(
-                "compute_shader_bind_group",
-                &pipeline.bind_group_layout,
-                &BindGroupEntries::sequential((
-                    // atmosphere bindings
-                    settings_binding.clone(),
-                    &transmittance_texture.texture_view,
-                    &pipeline.sampler,
-                    &multiple_scattering_texture.texture_view,
-                    &pipeline.sampler,
-                    &cloud_texture.texture_view,
-                    &pipeline.sampler,
-                    // output texture and globals
-                    &globals_buffer.buffer,
-                    &diffuse_irradiance_compute_target.texture_view,
-                )),
-            );
-
-            let compute_pipeline = pipeline_cache
-                .get_compute_pipeline(pipeline.pipeline)
-                .unwrap();
-
+            // First compute specular radiance
             {
+                let bind_group = render_context.render_device().create_bind_group(
+                    "compute_shader_bind_group",
+                    &pipeline.bind_group_layout,
+                    &BindGroupEntries::sequential((
+                        // atmosphere bindings
+                        settings_binding.clone(),
+                        &transmittance_texture.texture_view,
+                        &pipeline.sampler,
+                        &multiple_scattering_texture.texture_view,
+                        &pipeline.sampler,
+                        &cloud_texture.texture_view,
+                        &pipeline.sampler,
+                        // specular texture
+                        &placeholder_texture.texture_view,
+                        &pipeline.sampler,
+                        // output texture and globals
+                        &globals_buffer.buffer,
+                        &specular_radiance_compute_target.texture_view,
+                    )),
+                );
+
+                let compute_pipeline = pipeline_cache
+                    .get_compute_pipeline(pipeline.specular_radiance_pipeline)
+                    .unwrap();
+
+                let mut pass = render_context
+                    .command_encoder()
+                    .begin_compute_pass(&ComputePassDescriptor::default());
+
+                pass.set_pipeline(compute_pipeline);
+                pass.set_bind_group(0, &bind_group, &[0]);
+                pass.dispatch_workgroups(
+                    specular_radiance_compute_target.size.x / 8,
+                    specular_radiance_compute_target.size.y / 8,
+                    1,
+                );
+            }
+
+            // Then compute diffuse radiance
+            {
+                let bind_group = render_context.render_device().create_bind_group(
+                    "compute_shader_bind_group",
+                    &pipeline.bind_group_layout,
+                    &BindGroupEntries::sequential((
+                        // atmosphere bindings
+                        settings_binding.clone(),
+                        &transmittance_texture.texture_view,
+                        &pipeline.sampler,
+                        &multiple_scattering_texture.texture_view,
+                        &pipeline.sampler,
+                        &cloud_texture.texture_view,
+                        &pipeline.sampler,
+                        // specular texture
+                        &specular_radiance_compute_target.texture_view,
+                        &pipeline.sampler,
+                        // output texture and globals
+                        &globals_buffer.buffer,
+                        &diffuse_irradiance_compute_target.texture_view,
+                    )),
+                );
+
+                let compute_pipeline = pipeline_cache
+                    .get_compute_pipeline(pipeline.diffuse_radiance_pipeline)
+                    .unwrap();
+
                 let mut pass = render_context
                     .command_encoder()
                     .begin_compute_pass(&ComputePassDescriptor::default());
@@ -189,18 +262,18 @@ impl Node for RadianceMapNode {
                 );
             }
 
-            let compute_target = gpu_images
-                .get(&atmosphere.diffuse_irradiance_compute_target)
-                .unwrap();
-            let cubemap = gpu_images
+            let diffuse_cubemap = gpu_images
                 .get(&atmosphere.diffuse_irradiance_cubemap)
+                .unwrap();
+            let specular_cubemap = gpu_images
+                .get(&atmosphere.specular_radiance_cubemap)
                 .unwrap();
 
             // Copy each face
             for face in 0..6 {
                 render_context.command_encoder().copy_texture_to_texture(
                     ImageCopyTexture {
-                        texture: &compute_target.texture,
+                        texture: &diffuse_irradiance_compute_target.texture,
                         mip_level: 0,
                         origin: Origin3d {
                             x: 0,
@@ -210,7 +283,35 @@ impl Node for RadianceMapNode {
                         aspect: TextureAspect::All,
                     },
                     ImageCopyTexture {
-                        texture: &cubemap.texture,
+                        texture: &diffuse_cubemap.texture,
+                        mip_level: 0,
+                        origin: Origin3d {
+                            x: 0,
+                            y: 0,
+                            z: face,
+                        }, // Each array layer is a face
+                        aspect: TextureAspect::All,
+                    },
+                    Extent3d {
+                        width: 256,
+                        height: 256,
+                        depth_or_array_layers: 1,
+                    },
+                );
+
+                render_context.command_encoder().copy_texture_to_texture(
+                    ImageCopyTexture {
+                        texture: &specular_radiance_compute_target.texture,
+                        mip_level: 0,
+                        origin: Origin3d {
+                            x: 0,
+                            y: face * 256, // Offset for each face in the 2D texture
+                            z: 0,
+                        },
+                        aspect: TextureAspect::All,
+                    },
+                    ImageCopyTexture {
+                        texture: &specular_cubemap.texture,
                         mip_level: 0,
                         origin: Origin3d {
                             x: 0,

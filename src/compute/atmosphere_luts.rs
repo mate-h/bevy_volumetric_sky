@@ -25,6 +25,7 @@ pub struct AtmosphereLutPipeline {
     bind_group_layout: BindGroupLayout,
     transmittance_lut_pipeline: CachedComputePipelineId,
     multiple_scattering_lut_pipeline: CachedComputePipelineId,
+    sun_transmittance_lut_pipeline: CachedComputePipelineId,
     sampler: Sampler,
 }
 
@@ -71,9 +72,20 @@ impl FromWorld for AtmosphereLutPipeline {
                 label: Some("multiple_scattering_lut_pipeline".into()),
                 layout: vec![bind_group_layout.clone()],
                 push_constant_ranges: Vec::new(),
-                shader,
+                shader: shader.clone(),
                 shader_defs: vec![],
                 entry_point: Cow::from("multiple_scattering"),
+                zero_initialize_workgroup_memory: false,
+            });
+
+        let sun_transmittance_lut_pipeline =
+            pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+                label: Some("sun_transmittance_lut_pipeline".into()),
+                layout: vec![bind_group_layout.clone()],
+                push_constant_ranges: Vec::new(),
+                shader,
+                shader_defs: vec![],
+                entry_point: Cow::from("sun_transmittance"),
                 zero_initialize_workgroup_memory: false,
             });
 
@@ -87,6 +99,7 @@ impl FromWorld for AtmosphereLutPipeline {
             bind_group_layout,
             transmittance_lut_pipeline,
             multiple_scattering_lut_pipeline,
+            sun_transmittance_lut_pipeline,
             sampler,
         }
     }
@@ -176,6 +189,13 @@ impl Node for AtmosphereLutNode {
                 return Ok(());
             };
 
+            let Some(sun_transmittance_texture) =
+                gpu_images.get(&atmosphere.sun_transmittance_texture)
+            else {
+                log::error!("Sun transmittance texture not found");
+                return Ok(());
+            };
+
             // Select pipeline based on current state
             let (compute_pipeline, bind_group, workgroups) = match self.label {
                 ComputeLabel::TransmittanceLUT => {
@@ -223,6 +243,29 @@ impl Node for AtmosphereLutNode {
                         )),
                     );
                     (compute_pipeline, bind_group, (32, 32, 64))
+                }
+                ComputeLabel::SunTransmittance => {
+                    let compute_pipeline = pipeline_cache
+                        .get_compute_pipeline(pipeline.sun_transmittance_lut_pipeline)
+                        .unwrap();
+                    let bind_group = render_context.render_device().create_bind_group(
+                        "compute_shader_bind_group",
+                        &pipeline.bind_group_layout,
+                        &BindGroupEntries::sequential((
+                            // atmosphere bindings
+                            settings_binding.clone(),
+                            &transmittance_texture.texture_view,
+                            &pipeline.sampler,
+                            &multiple_scattering_texture.texture_view,
+                            &pipeline.sampler,
+                            &cloud_texture.texture_view,
+                            &pipeline.sampler,
+                            // output texture and globals
+                            &globals_buffer.buffer,
+                            &sun_transmittance_texture.texture_view,
+                        )),
+                    );
+                    (compute_pipeline, bind_group, (1, 1, 1))
                 }
                 _ => return Ok(()),
             };

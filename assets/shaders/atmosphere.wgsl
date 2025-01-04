@@ -23,6 +23,12 @@ struct AtmosphereSettings {
 @group(0) @binding(5) var cloudTexture: texture_3d<f32>;
 @group(0) @binding(6) var cloudTextureSampler: sampler;
 
+#ifdef USE_DEPTH_BUFFER
+#import bevy_render::view::View
+@group(0) @binding(10)
+var<uniform> view: View;
+#endif
+
 var<private> PI_1_4: f32 = 0.78539816339744830961566084522142;
 var<private> PI_1_2: f32 = 1.5707963267948966192313216916398;
 var<private> PI: f32 = 3.1415926535897932384626433832795;
@@ -353,7 +359,8 @@ struct SingleScatteringResult {
     NewMultiScatStep1Out: vec3<f32>,
 };
 
-var<private> SunLuminance: vec3<f32> = vec3<f32>(1000000.0); // arbitrary. But fine, not use when comparing the models
+// Sun's surface luminance ~1.6 × 10⁹ cd/m²
+var<private> SunLuminance: vec3<f32> = vec3<f32>(1.6e9);
 
 struct AtmosphereParameters {
     BottomRadius: f32,
@@ -604,13 +611,27 @@ fn IntegrateScatteredLuminance(
     if DepthBufferValue >= 0.0 {
         ClipSpace.z = DepthBufferValue;
         if ClipSpace.z < 1.0 {
-            // TODO: use bevy global camera matrix in the post process shader and move this to 
-            // utility function to denormalize the depth buffer value
-            // var DepthBufferWorldPos: vec4<f32> = uniformBuffer.invViewProjMatrix * vec4<f32>(ClipSpace, 1.0);
-            // DepthBufferWorldPos /= DepthBufferWorldPos.w;
+            #ifdef USE_DEPTH_BUFFER
+                // should be using inv view projection matrix instead of just view_from_clip
 
-            // var tDepth: f32 = length(DepthBufferWorldPos.xyz - (WorldPos + vec3<f32>(0.0, -Atmosphere.BottomRadius, 0.0))); // apply earth offset to go back to origin as top of earth mode. 
-            // tMax = min(tMax, tDepth);
+                // construct the inv view projection matrix
+                // var inv_proj = view.view_from_clip;
+                // var inv_view = view.world_from_view;
+                // var inv_view_proj = inv_view * inv_proj;
+
+                // var DepthBufferWorldPos: vec4<f32> = view.view_from_clip * vec4<f32>(ClipSpace, 1.0);
+                // DepthBufferWorldPos /= DepthBufferWorldPos.w;
+                // var tDepth: f32 = length(DepthBufferWorldPos.xyz - (WorldPos + vec3<f32>(0.0, -Atmosphere.BottomRadius, 0.0))); // apply earth offset to go back to origin as top of earth mode. 
+                // tMax = min(tMax, tDepth);
+
+
+                // Transform directly from clip to world space using the pre-computed inverse view-projection matrix
+                var DepthBufferWorldPos: vec4<f32> = view.world_from_clip * vec4<f32>(ClipSpace, 1.0);
+                DepthBufferWorldPos /= DepthBufferWorldPos.w;
+                var offset = WorldPos + vec3<f32>(0.0, -Atmosphere.BottomRadius, 0.0);
+                var tDepth: f32 = length(DepthBufferWorldPos.xyz - offset);
+                tMax = min(tMax, tDepth);
+            #endif
         }
     }
     tMax = min(tMax, tMaxMax);
