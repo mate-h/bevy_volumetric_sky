@@ -11,3 +11,5 @@ wasm-bindgen = "0.2.99"
 bevy_egui = "0.31.1"
 bevy_debug_grid = { git = "https://github.com/mate-h/bevy_debug_grid" }
 bytemuck = "1.14"
+transform-gizmo-bevy = { git = "https://github.com/rydb/transform-gizmo.git" }
+bevy_editor_cam = "0.5.0"

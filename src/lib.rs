@@ -15,11 +15,15 @@ use bevy::{
         },
     },
 };
+use bevy_editor_cam::prelude::EditorCam;
 use bevy_egui::EguiPlugin;
+use bevy_panorbit_camera::PanOrbitCamera;
+use transform_gizmo_bevy::{GizmoCamera, GizmoTarget, TransformGizmoPlugin};
 
 mod atmosphere;
 mod compute;
 mod gui;
+mod picking;
 mod post_process;
 
 pub struct VolumetricSkyPlugin;
@@ -37,6 +41,8 @@ impl Plugin for VolumetricSkyPlugin {
             EguiPlugin,
             post_process::PostProcessPlugin,
             gui::GuiPlugin,
+            TransformGizmoPlugin,
+            picking::GizmoPickingPlugin,
         ))
         .add_event::<TransmittanceUpdate>()
         .add_systems(Startup, setup)
@@ -86,7 +92,7 @@ fn create_placeholder_skybox_texture(mut images: ResMut<Assets<Image>>) -> Handl
 }
 
 fn create_ground_plane_mesh(meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
-    let plane_mesh = Plane3d::new(Vec3::new(0.0, 1.0, 0.0), Vec2::new(1000.0, 1000.0))
+    let plane_mesh = Plane3d::new(Vec3::new(0.0, 1.0, 0.0), Vec2::new(10.0, 10.0))
         .mesh()
         .build();
     meshes.add(plane_mesh)
@@ -114,13 +120,11 @@ fn setup(
     // Spawn the GLTF scene
     commands.spawn((
         SceneRoot(
-            asset_server
-                // .load(GltfAssetLabel::Scene(0).from_asset("models/FlightHelmet/FlightHelmet.gltf")),
-                .load(
-                    GltfAssetLabel::Scene(0).from_asset("models/porsche_911_carrera_4s/scene.gltf"),
-                ),
+            asset_server.load(
+                GltfAssetLabel::Scene(0).from_asset("models/porsche_911_carrera_4s/scene.gltf"),
+            ),
         ),
-        Transform::from_xyz(0.0, 0.6667, 0.0),
+        Transform::from_xyz(0.0, 0.667, 0.0),
     ));
 
     // spawn ground plane
@@ -177,13 +181,14 @@ fn setup(
             ..default()
         },
         AtmosphereSettings::default(),
+        GizmoCamera,
         PostProcessSettings {
             show: 1.0,
             ..default()
         },
         Skybox {
             // not sure why 5000 multiplier is needed here but seems to result in the correct exposure
-            brightness: 5000.0,
+            brightness: 0.0,
             image: skybox_handle.clone(),
             ..default()
         },
@@ -198,7 +203,6 @@ fn setup(
 
 // Re-export main components and types
 pub use atmosphere::{AtmosphereResources, AtmosphereSettings};
-use bevy_panorbit_camera::PanOrbitCamera;
 pub use post_process::PostProcessSettings;
 
 // Update the directional light direction
@@ -212,7 +216,7 @@ fn update_sun_direction(
             let sun_dir = Vec3::new(
                 atmosphere.sun_position.x,
                 atmosphere.sun_position.y,
-                -atmosphere.sun_position.z,
+                atmosphere.sun_position.z,
             )
             .normalize();
             let rotation = Quat::from_rotation_arc(up, sun_dir);

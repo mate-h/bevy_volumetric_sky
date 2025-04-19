@@ -5,6 +5,7 @@ use bevy::{
     },
     ecs::query::QueryItem,
     log,
+    pbr::{GpuLights, LightMeta, ViewLightsUniformOffset, ViewShadowBindings},
     prelude::*,
     render::{
         extract_component::{
@@ -50,11 +51,7 @@ impl Plugin for PostProcessPlugin {
             .add_render_graph_node::<ViewNodeRunner<PostProcessNode>>(Core3d, PostProcessLabel)
             .add_render_graph_edges(
                 Core3d,
-                (
-                    Node3d::Tonemapping,
-                    PostProcessLabel,
-                    Node3d::EndMainPassPostProcessing,
-                ),
+                (Node3d::EndMainPass, PostProcessLabel, Node3d::Tonemapping),
             );
     }
 
@@ -78,6 +75,8 @@ impl ViewNode for PostProcessNode {
         &'static DynamicUniformIndex<PostProcessSettings>,
         &'static ViewUniformOffset,
         &'static DynamicUniformIndex<AtmosphereSettings>,
+        &'static ViewShadowBindings,
+        &'static ViewLightsUniformOffset,
     );
 
     fn run(
@@ -91,6 +90,8 @@ impl ViewNode for PostProcessNode {
             settings_index,
             view_uniform_offset,
             atmosphere_settings_index,
+            view_shadows,
+            lights_uniform_offset,
         ): QueryItem<Self::ViewQuery>,
         world: &World,
     ) -> Result<(), NodeRunError> {
@@ -101,6 +102,12 @@ impl ViewNode for PostProcessNode {
         let gpu_images = world.resource::<RenderAssets<GpuImage>>();
         let atmosphere_settings_uniforms =
             world.resource::<ComponentUniforms<AtmosphereSettings>>();
+        let light_meta = world.resource::<LightMeta>();
+
+        let Some(light_binding) = light_meta.view_gpu_lights.binding() else {
+            log::error!("Light binding not found");
+            return Ok(());
+        };
 
         let Some(atmosphere_settings_binding) = atmosphere_settings_uniforms.binding() else {
             log::error!("Atmosphere settings binding not found");
@@ -126,7 +133,7 @@ impl ViewNode for PostProcessNode {
 
         let Some(pipeline) = pipeline_cache.get_render_pipeline(post_process_pipeline.pipeline_id)
         else {
-            log::error!("Post process pipeline not found");
+            // log::error!("Post process pipeline not found");
             return Ok(());
         };
 
@@ -156,12 +163,22 @@ impl ViewNode for PostProcessNode {
                 &post_process_pipeline.sampler,
                 &cloud_texture.texture_view,
                 &post_process_pipeline.sampler,
+                // view binding
+                view_binding.clone(),
                 // output texture and globals
                 post_process.source,
                 depth_texture.view(),
                 &post_process_pipeline.sampler,
-                view_binding.clone(),
                 settings_binding.clone(),
+            )),
+        );
+        let shadow_bind_group = render_context.render_device().create_bind_group(
+            "post_process_shadow_bind_group",
+            &post_process_pipeline.shadow_layout,
+            &BindGroupEntries::sequential((
+                &view_shadows.directional_light_depth_texture_view,
+                &post_process_pipeline.comparison_sampler,
+                light_binding.clone(),
             )),
         );
 
@@ -187,6 +204,7 @@ impl ViewNode for PostProcessNode {
                 settings_index.index(),
             ],
         );
+        render_pass.set_bind_group(1, &shadow_bind_group, &[lights_uniform_offset.offset]);
         render_pass.draw(0..3, 0..1);
 
         Ok(())
@@ -196,7 +214,9 @@ impl ViewNode for PostProcessNode {
 #[derive(Resource)]
 struct PostProcessPipeline {
     layout: BindGroupLayout,
+    shadow_layout: BindGroupLayout,
     sampler: Sampler,
+    comparison_sampler: Sampler,
     pipeline_id: CachedRenderPipelineId,
 }
 
@@ -217,16 +237,28 @@ impl FromWorld for PostProcessPipeline {
                     sampler(SamplerBindingType::Filtering),
                     texture_3d(TextureSampleType::Float { filterable: true }),
                     sampler(SamplerBindingType::Filtering),
+                    // View uniform
+                    uniform_buffer::<ViewUniform>(true),
                     // Color texture
                     texture_2d(TextureSampleType::Float { filterable: true }),
-                    // Depth texture - Change to multisampled
+                    // Depth texture
                     texture_2d_multisampled(TextureSampleType::Depth),
                     // The sampler
                     sampler(SamplerBindingType::Filtering),
-                    // View uniform
-                    uniform_buffer::<ViewUniform>(true),
                     // The settings uniform
                     uniform_buffer::<PostProcessSettings>(true),
+                ),
+            ),
+        );
+
+        let shadow_layout = render_device.create_bind_group_layout(
+            "post_process_shadow_bind_group_layout",
+            &BindGroupLayoutEntries::sequential(
+                ShaderStages::FRAGMENT,
+                (
+                    texture_2d_array(TextureSampleType::Depth),
+                    sampler(SamplerBindingType::Comparison),
+                    uniform_buffer::<GpuLights>(true),
                 ),
             ),
         );
@@ -234,6 +266,11 @@ impl FromWorld for PostProcessPipeline {
         let sampler = render_device.create_sampler(&SamplerDescriptor {
             mag_filter: FilterMode::Linear,
             min_filter: FilterMode::Linear,
+            ..default()
+        });
+
+        let comparison_sampler = render_device.create_sampler(&SamplerDescriptor {
+            compare: Some(CompareFunction::Less),
             ..default()
         });
 
@@ -246,7 +283,7 @@ impl FromWorld for PostProcessPipeline {
                 .resource_mut::<PipelineCache>()
                 .queue_render_pipeline(RenderPipelineDescriptor {
                     label: Some("post_process_pipeline".into()),
-                    layout: vec![layout.clone()],
+                    layout: vec![layout.clone(), shadow_layout.clone()],
                     vertex: fullscreen_shader_vertex_state(),
                     fragment: Some(FragmentState {
                         shader,
@@ -267,7 +304,9 @@ impl FromWorld for PostProcessPipeline {
 
         Self {
             layout,
+            shadow_layout,
             sampler,
+            comparison_sampler,
             pipeline_id,
         }
     }

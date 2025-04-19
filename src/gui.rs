@@ -5,6 +5,8 @@ use crate::atmosphere::{AtmosphereResources, AtmosphereSettings};
 use crate::post_process::PostProcessSettings;
 use crate::Ground;
 use bevy::color::palettes::tailwind;
+use bevy::render::view::screenshot::{save_to_disk, Screenshot};
+use bevy::scene::SceneRoot;
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     input::mouse::MouseMotion,
@@ -14,6 +16,7 @@ use bevy_debug_grid::Grid;
 use bevy_egui::egui::Color32;
 use bevy_egui::{egui, EguiContexts, EguiSet};
 use bevy_panorbit_camera::PanOrbitCamera;
+use transform_gizmo_bevy::GizmoTarget;
 
 #[derive(Resource, Default)]
 pub struct EguiInteractionState {
@@ -89,6 +92,8 @@ fn check_egui_wants_focus(mut state: ResMut<EguiInteractionState>, mut contexts:
 fn ui_system(
     mut contexts: EguiContexts,
     diagnostics: Res<DiagnosticsStore>,
+    window_query: Query<&Window>,
+    mut commands: Commands,
     mut camera_query: Query<&mut PanOrbitCamera>,
     mut post_process_settings: Query<&mut PostProcessSettings>,
     mut grid_query: Query<&mut Visibility, (With<Grid>, Without<Ground>)>,
@@ -96,7 +101,11 @@ fn ui_system(
     mut atmosphere_settings: Query<&mut AtmosphereSettings>,
     atmosphere_res: Res<AtmosphereResources>,
     mut sun_position_state: ResMut<SunPositionState>,
+    mut scene_query: Query<(Entity, Option<&GizmoTarget>), With<SceneRoot>>,
 ) {
+    // Temporarily return early to hide GUI
+    // return;
+
     let ms_texture_id = contexts.add_image(atmosphere_res.multiple_scattering_texture.clone_weak());
     let transmittance_texture_id =
         contexts.add_image(atmosphere_res.transmittance_texture.clone_weak());
@@ -174,6 +183,21 @@ fn ui_system(
                 }
             }
 
+            // Add checkbox for GizmoTarget
+            if let Ok((scene_entity, gizmo_target)) = scene_query.get_single_mut() {
+                let mut has_gizmo = gizmo_target.is_some();
+                if ui
+                    .checkbox(&mut has_gizmo, "Enable Transform Gizmo")
+                    .clicked()
+                {
+                    if has_gizmo {
+                        commands.entity(scene_entity).insert(GizmoTarget::default());
+                    } else {
+                        commands.entity(scene_entity).remove::<GizmoTarget>();
+                    }
+                }
+            }
+
             ui.separator();
             let blue_400 = Color32::from_hex(tailwind::BLUE_400.to_hex().as_str()).unwrap();
             ui.colored_label(blue_400, "Atmosphere");
@@ -208,6 +232,22 @@ fn ui_system(
                 if ui.checkbox(&mut show, "Multiple Scattering").clicked() {
                     settings.multiple_scattering_factor = show as u32 as f32;
                 }
+
+                // Add volumetric shadows toggle
+                let mut enable_shadows = settings.enable_volumetric_shadows != 0.0;
+                if ui
+                    .checkbox(&mut enable_shadows, "Volumetric Shadows")
+                    .clicked()
+                {
+                    settings.enable_volumetric_shadows = enable_shadows as u32 as f32;
+                }
+
+                // Add slider for ray march samples
+                ui.add(
+                    egui::Slider::new(&mut settings.max_raymarch_samples, 4.0..=64.0)
+                        .text("Ray March Samples")
+                        .logarithmic(true),
+                );
             }
 
             // Post process
@@ -244,6 +284,16 @@ fn ui_system(
                 transmittance_texture_id,
                 egui::vec2(256.0 / 2.0, 64.0 / 2.0),
             ));
+
+            ui.separator();
+            if ui.button("Save Screenshot").clicked() {
+                if let Ok(window) = window_query.get_single() {
+                    let path = format!("screenshot-1.png");
+                    commands
+                        .spawn(Screenshot::primary_window())
+                        .observe(save_to_disk(path));
+                }
+            }
         });
 }
 
@@ -252,9 +302,15 @@ fn handle_camera_block(
     mut mouse_motion: EventReader<MouseMotion>,
     mut camera_query: Query<&mut PanOrbitCamera>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
+    gizmo_targets: Query<&GizmoTarget>,
 ) {
+    // Check if any gizmo is active or focused
+    let gizmo_active = gizmo_targets
+        .iter()
+        .any(|target| target.is_focused() || target.is_active());
+
     // Check if camera interaction is starting
-    if mouse_buttons.just_pressed(MouseButton::Left) && !state.wants_focus {
+    if mouse_buttons.just_pressed(MouseButton::Left) && !state.wants_focus && !gizmo_active {
         state.camera_interaction_active = true;
     }
 
@@ -263,7 +319,8 @@ fn handle_camera_block(
         state.camera_interaction_active = false;
     }
 
-    if state.wants_focus && !state.camera_interaction_active {
+    // Block camera if egui wants focus or if gizmo is active
+    if (state.wants_focus && !state.camera_interaction_active) || gizmo_active {
         mouse_motion.clear();
 
         if let Ok(mut camera) = camera_query.get_single_mut() {

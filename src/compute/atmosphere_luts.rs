@@ -242,7 +242,7 @@ impl Node for AtmosphereLutNode {
                             &multiple_scattering_texture.texture_view,
                         )),
                     );
-                    (compute_pipeline, bind_group, (32, 32, 64))
+                    (compute_pipeline, bind_group, (32, 32, 1))
                 }
                 ComputeLabel::SunTransmittance => {
                     let compute_pipeline = pipeline_cache

@@ -12,6 +12,8 @@ struct AtmosphereSettings {
     enable_clouds: f32,
     exposure: f32,
     multiple_scattering_factor: f32,
+    enable_volumetric_shadows: f32,
+    max_raymarch_samples: f32,
 }
 @group(0) @binding(0) var<uniform> uniformBuffer: AtmosphereSettings;
 
@@ -25,8 +27,87 @@ struct AtmosphereSettings {
 
 #ifdef USE_DEPTH_BUFFER
 #import bevy_render::view::View
-@group(0) @binding(10)
+@group(0) @binding(7)
 var<uniform> view: View;
+#endif
+
+#ifdef USE_SHADOW_MAP
+#import bevy_pbr::mesh_view_types::Lights;
+@group(1) @binding(0) var directional_shadow_texture: texture_depth_2d_array;
+@group(1) @binding(1) var directional_shadow_sampler: sampler_comparison;
+@group(1) @binding(2) var<uniform> lights: Lights;
+// #import bevy_pbr::shadows::fetch_directional_shadow
+fn sample_shadow_map_hardware(light_local: vec2<f32>, depth: f32, array_index: i32) -> f32 {
+    return textureSampleCompareLevel(
+        directional_shadow_texture,
+        directional_shadow_sampler,
+        light_local,
+        array_index,
+        depth,
+    );
+}
+
+fn fetch_directional_shadow(light_index: u32, world_pos: vec4<f32>, normal: vec3<f32>, view_z: f32) -> f32 {
+    let light = &lights.directional_lights[light_index]; // Using first directional light
+    
+    // Get cascade index based on view_z
+    var cascade_index = 0u;
+    for (var i = 0u; i < (*light).num_cascades; i++) {
+        if (-view_z < (*light).cascades[i].far_bound) {
+            cascade_index = i;
+            break;
+        }
+    }
+    
+    // Get the cascade
+    let cascade = &(*light).cascades[cascade_index];
+    
+    // Calculate position with bias
+    let normal_offset = (*light).shadow_normal_bias * (*cascade).texel_size * normal;
+    let depth_offset = (*light).shadow_depth_bias * (*light).direction_to_light;
+    let offset_position = vec4<f32>(world_pos.xyz + normal_offset + depth_offset, world_pos.w);
+    
+    // Transform to light space
+    let light_local = (*cascade).clip_from_world * offset_position;
+    
+    // Convert to UV coordinates
+    let ndc = light_local.xyz / light_local.w;
+    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+    
+    // Early exit if outside shadow map
+    if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
+        return 1.0;
+    }
+    
+    let depth = ndc.z;
+    let array_index = i32((*light).depth_texture_base_index + cascade_index);
+    
+    // Sample shadow map
+    return textureSampleCompareLevel(
+        directional_shadow_texture,
+        directional_shadow_sampler,
+        uv,
+        array_index,
+        depth
+    );
+}
+
+fn getShadow(P: vec3<f32>, ray_dir: vec3<f32>) -> f32 {
+    // For raymarched volumes, we can use the ray direction as the normal
+    // since we don't have surface normals
+    let world_normal = -ray_dir; // Point against ray direction
+    let Atmosphere = GetAtmosphereParameters();
+    let world_pos = vec4<f32>(P + vec3<f32>(0.0, -Atmosphere.BottomRadius, 0.0), 1.0);
+    // Get view space Z coordinate for cascade selection
+    let view_pos = view.view_from_world * world_pos;
+    let view_z = view_pos.z;
+
+    // get local up vector
+    let local_up = vec3<f32>(0.0, 1.0, 0.0);
+
+    // Assuming we're using the first directional light (index 0)
+    return 1.0 - fetch_directional_shadow(0u, world_pos, world_normal, view_z);
+}
 #endif
 
 var<private> PI_1_4: f32 = 0.78539816339744830961566084522142;
@@ -51,7 +132,7 @@ fn GetAtmosphereParameters() -> AtmosphereParameters {
 
     info.BottomRadius = EarthBottomRadius;
     info.TopRadius = EarthTopRadius;
-    info.GroundAlbedo = vec3<f32>(1.0, 1.0, 1.0);
+    info.GroundAlbedo = vec3<f32>(0.0, 0.0, 0.0);
 
     info.RayleighDensityExpScale = -1.0 / EarthRayleighScaleHeight;
     info.RayleighScattering = vec3<f32>(0.005802, 0.013558, 0.033100);
@@ -185,22 +266,22 @@ fn UvToLutTransmittanceParams(Atmosphere: AtmosphereParameters, uv: vec2<f32>) -
 }
 
 fn RenderTransmittanceLutPS(pixPos: vec2<f32>, uv: vec2<f32>, texSizeF32: vec2<f32>) -> vec4<f32> {
-    let Atmosphere: AtmosphereParameters = GetAtmosphereParameters();
-    let transmittanceParams: UvToLutResult = UvToLutTransmittanceParams(Atmosphere, uv);
+    var Atmosphere: AtmosphereParameters = GetAtmosphereParameters();
+    var transmittanceParams: UvToLutResult = UvToLutTransmittanceParams(Atmosphere, uv);
 
-    let WorldPos: vec3<f32> = vec3<f32>(0.0, 0.0, transmittanceParams.viewHeight);
-    let WorldDir: vec3<f32> = vec3<f32>(0.0, sqrt(1.0 - transmittanceParams.viewZenithCosAngle * transmittanceParams.viewZenithCosAngle), transmittanceParams.viewZenithCosAngle);
+    var WorldPos: vec3<f32> = vec3<f32>(0.0, 0.0, transmittanceParams.viewHeight);
+    var WorldDir: vec3<f32> = vec3<f32>(0.0, sqrt(1.0 - transmittanceParams.viewZenithCosAngle * transmittanceParams.viewZenithCosAngle), transmittanceParams.viewZenithCosAngle);
 
-    let ground = false;
-    let SampleCountIni = 40.0;	// Can go a low as 10 sample but energy lost starts to be visible.
-    let DepthBufferValue = -1.0;
-    let VariableSampleCount = false;
-    let MieRayPhase = false;
+    var ground = false;
+    var SampleCountIni = 40.0;	// Can go a low as 10 sample but energy lost starts to be visible.
+    var DepthBufferValue = -1.0;
+    var VariableSampleCount = false;
+    var MieRayPhase = false;
 
-    let scatteringResult: SingleScatteringResult = IntegrateScatteredLuminance(pixPos, WorldPos, WorldDir, getSunDirection(), Atmosphere, ground, SampleCountIni, DepthBufferValue, VariableSampleCount, MieRayPhase, defaultTMaxMax, texSizeF32);
-    let transmittance: vec3<f32> = exp(-scatteringResult.OpticalDepth);
+    var scatteringResult: SingleScatteringResult = IntegrateScatteredLuminance(pixPos, WorldPos, WorldDir, getSunDirection(), Atmosphere, ground, SampleCountIni, DepthBufferValue, VariableSampleCount, MieRayPhase, defaultTMaxMax, texSizeF32);
+    var transmittance: vec3<f32> = exp(-scatteringResult.OpticalDepth);
 
-    // let transmittance = vec3<f32>(uv, 0.0);
+    // transmittance = vec3<f32>(uv, 0.0);
 
     // Optical depth to transmittance
     return vec4<f32>(transmittance, 1.0);
@@ -297,14 +378,10 @@ fn RenderMultipleScatteringLutPS(pixPos: vec2<f32>, texSizeF32: vec2<f32>, Threa
     var InScatteredLuminance: vec3<f32> = LSharedMem[0] * IsotropicPhase;
 
     var L: vec3<f32> = vec3<f32>(0.0);
-    if MULTI_SCATTERING_POWER_SERIE == 0 {
-        var MultiScatAs1SQR: vec3<f32> = MultiScatAsOne * MultiScatAsOne;
-        L = InScatteredLuminance * (1.0 + MultiScatAsOne + MultiScatAs1SQR + MultiScatAsOne * MultiScatAs1SQR + MultiScatAs1SQR * MultiScatAs1SQR);
-    } else {
-        var r: vec3<f32> = MultiScatAsOne;
-        var SumOfAllMultiScatteringEventsContribution: vec3<f32> = 1.0 / (1.0 - r);
-        L = InScatteredLuminance * SumOfAllMultiScatteringEventsContribution;
-    }
+
+    var r: vec3<f32> = MultiScatAsOne;
+    var SumOfAllMultiScatteringEventsContribution: vec3<f32> = 1.0 / (1.0 - r);
+    L = InScatteredLuminance * SumOfAllMultiScatteringEventsContribution;
 
     return vec4<f32>(L, 1.0);
 }
@@ -343,10 +420,8 @@ var<private> PLANET_RADIUS_OFFSET: f32 = 0.01;
 // 128.0 for thicker atmosphere
 // 256.0 for clouds
 var<private> RayMarchMinMaxSPP: vec2<f32> = vec2<f32>(1.0, 16.0);
-var<private> RayMarchMinMaxSPPCloud: vec2<f32> = vec2<f32>(1.0, 128.0);
-var<private> MULTI_SCATTERING_POWER_SERIE: u32 = 1;
+var<private> RayMarchMinMaxSPPCloud: vec2<f32> = vec2<f32>(1.0, 256.0);
 var<private> MULTISCATAPPROX_ENABLED: u32 = 1;
-var<private> SHADOWMAP_ENABLED: u32 = 0;
 var<private> VOLUMETRIC_SHADOW_ENABLED: u32 = 1;
 var<private> MultiScatteringLUTRes: f32 = 32.0;
 
@@ -446,6 +521,44 @@ fn raySphereIntersectNearest(r0: vec3<f32>, rd: vec3<f32>, s0: vec3<f32>, sR: f3
     return max(0.0, min(sol0, sol1));
 }
 
+struct SphereIntersection {
+    near: f32,
+    far: f32,
+}
+
+fn raySphereIntersect(r0: vec3<f32>, rd: vec3<f32>, s0: vec3<f32>, sR: f32) -> SphereIntersection {
+    var result: SphereIntersection;
+    result.near = -1.0;
+    result.far = -1.0;
+
+    let a = dot(rd, rd);
+    let s0_r0 = r0 - s0;
+    let b = 2.0 * dot(rd, s0_r0);
+    let c = dot(s0_r0, s0_r0) - (sR * sR);
+    let delta = b * b - 4.0 * a * c;
+
+    if delta < 0.0 || a == 0.0 {
+        return result;
+    }
+
+    let sqrtDelta = sqrt(delta);
+    let sol0 = (-b - sqrtDelta) / (2.0 * a);
+    let sol1 = (-b + sqrtDelta) / (2.0 * a);
+
+    // Check if ray origin is inside sphere
+    let isInside = dot(s0_r0, s0_r0) < (sR * sR);
+    
+    if isInside {
+        result.near = 0.0;
+        result.far = max(0.0, sol1);
+    } else {
+        result.near = max(0.0, sol0);
+        result.far = max(0.0, sol1);
+    }
+
+    return result;
+}
+
 fn CornetteShanksMiePhaseFunction(g: f32, cosTheta: f32) -> f32 {
     var k: f32 = 3.0 / (8.0 * PI) * (1.0 - g * g) / (2.0 + g * g);
     return k * (1.0 + cosTheta * cosTheta) / pow(1.0 + g * g - 2.0 * g * -cosTheta, 1.5);
@@ -535,11 +648,6 @@ fn GetMultipleScattering(Atmosphere: AtmosphereParameters, scattering: vec3<f32>
 
     var multiScatteredLuminance: vec3<f32> = textureSampleLevel(multipleScatteringTexture, multipleScatteringTextureSampler, uv, 0.0).rgb;
     return multiScatteredLuminance * uniformBuffer.multiple_scattering_factor;
-}
-
-fn getShadow(Atmosphere: AtmosphereParameters, P: vec3<f32>) -> f32 {
-    // TODO: sample cascading shadow map
-    return 1.0;
 }
 
 fn computeVolumetricShadow(WorldPos: vec3<f32>, LightDir: vec3<f32>, Atmosphere: AtmosphereParameters) -> f32 {
@@ -641,10 +749,7 @@ fn IntegrateScatteredLuminance(
     var SampleCountFloor: f32 = SampleCountIni;
     var tMaxFloor: f32 = tMax;
     if VariableSampleCount {
-        var spp: vec2<f32> = RayMarchMinMaxSPP;
-        if uniformBuffer.enable_clouds > 0.5 {
-            spp = RayMarchMinMaxSPPCloud;
-        }
+        var spp: vec2<f32> = vec2<f32>(1.0, uniformBuffer.max_raymarch_samples);
         SampleCount = mix(spp.x, spp.y, clamp(tMax * 0.01, 0.0, 1.0));
         SampleCountFloor = floor(SampleCount);
         tMaxFloor = tMax * SampleCountFloor / SampleCount; // rescale tMax to map to the last entire step segment.
@@ -735,34 +840,22 @@ fn IntegrateScatteredLuminance(
         }
 
         var shadow: f32 = 1.0;
-        if SHADOWMAP_ENABLED == 1 {
-            shadow = getShadow(Atmosphere, P);
+        if (uniformBuffer.enable_volumetric_shadows > 0.5) {
+            #ifdef USE_SHADOW_MAP
+                shadow = getShadow(P, WorldDir);
+            #endif
         }
         var height: f32 = length(WorldPos) - Atmosphere.BottomRadius;
-        if VOLUMETRIC_SHADOW_ENABLED == 1 && uniformBuffer.enable_clouds > 0.5 {
-            shadow = computeVolumetricShadow(P, SunDir, Atmosphere);
+        var cloudShadow: f32 = 1.0;
+        if uniformBuffer.enable_clouds > 0.5 {
+            cloudShadow = computeVolumetricShadow(P, SunDir, Atmosphere);
         }
 
-        var S: vec3<f32> = globalL * (earthShadow * shadow * TransmittanceToSun * PhaseTimesScattering + multiScatteredLuminance * medium.scattering);
+        var S: vec3<f32> = globalL * (earthShadow * shadow * cloudShadow * TransmittanceToSun * PhaseTimesScattering + multiScatteredLuminance * medium.scattering);
 
-        if MULTI_SCATTERING_POWER_SERIE == 0 {
-            result.MultiScatAsOne += throughput * medium.scattering * 1.0 * dt;
-        } else {
-            var MS: vec3<f32> = medium.scattering * 1.0;
-            var MSint: vec3<f32> = (MS - MS * SampleTransmittance) / medium.extinction;
-            result.MultiScatAsOne += throughput * MSint;
-        }
-
-        // Evaluate input to multi scattering
-        {
-            var newMS: vec3<f32>;
-
-            newMS = earthShadow * TransmittanceToSun * medium.scattering * uniformPhase * 1.0;
-            result.NewMultiScatStep0Out += throughput * (newMS - newMS * SampleTransmittance) / medium.extinction;
-
-            newMS = medium.scattering * uniformPhase * multiScatteredLuminance;
-            result.NewMultiScatStep1Out += throughput * (newMS - newMS * SampleTransmittance) / medium.extinction;
-        }
+        var MS: vec3<f32> = medium.scattering * 1.0;
+        var MSint: vec3<f32> = (MS - MS * SampleTransmittance) / medium.extinction;
+        result.MultiScatAsOne += throughput * MSint;
 
         var Sint: vec3<f32> = (S - S * SampleTransmittance) / medium.extinction;
         L += throughput * Sint;

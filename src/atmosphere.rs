@@ -32,6 +32,8 @@ pub struct AtmosphereSettings {
     pub enable_clouds: f32,
     pub exposure: f32,
     pub multiple_scattering_factor: f32,
+    pub enable_volumetric_shadows: f32,
+    pub max_raymarch_samples: f32,
 }
 
 impl Default for AtmosphereSettings {
@@ -40,7 +42,7 @@ impl Default for AtmosphereSettings {
             // sunset towards the horizon
             sun_position: Vec3::new(0.0, 0.25, 0.97),
             // 200m above the ground
-            eye_position: Vec3::new(0.0, 0.2, 0.0),
+            eye_position: Vec3::new(0.0, 0.01, 0.0),
             sun_intensity: DIRECT_SUNLIGHT,
             rayleigh_scattering: Vec3::new(5.802, 13.558, 33.1),
             mie_scattering: Vec3::new(3.996, 3.996, 3.996),
@@ -50,6 +52,8 @@ impl Default for AtmosphereSettings {
             enable_clouds: 0.0,
             exposure: 1.0,
             multiple_scattering_factor: 1.0,
+            enable_volumetric_shadows: 1.0,
+            max_raymarch_samples: 16.0,
         }
     }
 }
